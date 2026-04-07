@@ -56,6 +56,8 @@ Reddit Tab Harvester Chrome extension originally built by u/sunlesshalo on Reddi
 
 Mac menu bar app and iPhone integration built using Claude by Shashank Karpal.
 
+Special thanks to Karl (https://github.com/karlbaz) for contributions and feedback.
+
 ## License
 
 MIT
