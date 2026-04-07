@@ -1,0 +1,6 @@
+knowledge.json
+knowledge.html
+error.log
+__pycache__/
+*.pyc
+*.tmp
