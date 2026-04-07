@@ -184,11 +184,17 @@ function render() {{
 }}
 function dismissItem(btn) {{
   const card = btn.closest(".item");
-  const idx = DATA.findIndex(i => i.url === card.dataset.url);
+  const url = card.dataset.url;
+  const idx = DATA.findIndex(i => i.url === url);
   if (idx !== -1) DATA.splice(idx, 1);
   card.remove();
   document.getElementById("count").textContent = DATA.length;
   if (DATA.length === 0) document.getElementById("empty-state").style.display = "block";
+  fetch("http://localhost:7778/delete", {{
+    method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{url: url}})
+  }}).catch(e => console.warn("Delete sync failed:", e));
 }}
 document.querySelectorAll(".filters button").forEach(btn => {{
   btn.addEventListener("click", () => {{
@@ -291,13 +297,32 @@ class ReceiverHandler(BaseHTTPRequestHandler):
         self.app_instance = app_instance
         super().__init__(*args, **kwargs)
 
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length))
-        url = body.get("url", "").strip()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+
+        if self.path == "/delete":
+            url = body.get("url", "").strip()
+            if url:
+                data = _load_data()
+                data["items"] = [i for i in data["items"] if i["url"] != url]
+                _save_data(data)
+                HTML_FILE.write_text(build_html(data["items"]))
+            self.wfile.write(json.dumps({"ok": True}).encode())
+            return
+
+        url = body.get("url", "").strip()
         self.wfile.write(json.dumps({"ok": True}).encode())
         if url.startswith(("http://", "https://")):
             self.app_instance.title = "⏳"
