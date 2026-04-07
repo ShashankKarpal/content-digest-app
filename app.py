@@ -19,6 +19,7 @@ DATA_FILE = BASE_DIR / "knowledge.json"
 HTML_FILE = BASE_DIR / "knowledge.html"
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
 MODEL = "qwen2.5-14b-instruct-1m"
+AUTH_TOKEN = "f69d129b4cbc142400688811b2088985"
 
 
 def _load_data():
@@ -305,6 +306,15 @@ class ReceiverHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if self.path != "/delete":
+            auth = self.headers.get("Authorization", "")
+            if auth != f"Bearer {AUTH_TOKEN}":
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "Unauthorized"}).encode())
+                return
+
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length))
         self.send_response(200)
