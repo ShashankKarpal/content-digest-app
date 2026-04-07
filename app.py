@@ -35,21 +35,16 @@ def _save_data(data):
 
 def fetch_url_content(url):
     try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,*/*",
-                "Accept-Encoding": "identity",
-            }
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read().decode("utf-8", errors="ignore")
-        text = re.sub(r'<[^>]+>', ' ', raw)
-        text = re.sub(r'\s+', ' ', text).strip()
+        import trafilatura
+        downloaded = trafilatura.fetch_url(url)
+        if downloaded is None:
+            return None
+        text = trafilatura.extract(downloaded, include_comments=False, include_tables=True)
+        if not text:
+            return None
         return text[:3000]
     except Exception as e:
-        return f"Could not fetch content: {e}"
+        return None
 
 
 def analyze_with_lmstudio(url, content):
@@ -246,6 +241,9 @@ class ContentDigestApp(rumps.App):
     def _process_url(self, url):
         try:
             content = fetch_url_content(url)
+            if content is None:
+                rumps.notification("Content Digest", "Could not fetch", f"Unable to extract content from {url[:60]}")
+                return
             analysis = analyze_with_lmstudio(url, content)
             data = _load_data()
             if url in [i["url"] for i in data["items"]]:
