@@ -52,7 +52,7 @@ Steps:
 
 ## Credits
 
-Reddit Tab Harvester Chrome extension originally built by sunlesshalo at https://github.com/sunlesshalo/reddit-tab-harvester and extended with LM Studio support, LinkedIn harvesting, and unified knowledge base.
+Reddit Tab Harvester Chrome extension originally built by u/sunlesshalo on Reddit (https://github.com/sunlesshalo/reddit-tab-harvester) and extended with LM Studio support, LinkedIn harvesting, and unified knowledge base.
 
 Mac menu bar app and iPhone integration built using Claude by Shashank Karpal.
 
