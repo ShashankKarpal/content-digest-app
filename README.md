@@ -1,63 +1,81 @@
 # Content Digest
 
-A free, private, local-AI-powered knowledge base that lives in your Mac menu bar.
+A local Mac menu bar app that saves URLs, summarizes them with a local LLM, and builds a personal knowledge base. No cloud. No subscriptions. Runs entirely on your machine.
 
-Save any article, LinkedIn post, Reddit thread, or webpage with one click from your Mac or iPhone. Get an instant AI summary with action pointers, auto-categorized into a searchable knowledge base, with zero subscriptions and zero data leaving your devices.
-
-## Screenshots
-
-![Menu Bar](screenshots/menubar.png)
-![Knowledge Base](screenshots/knowledge-base.png)
+---
 
 ## What It Does
 
-- One-click saving from Mac menu bar or iPhone Share Sheet
-- AI summarization with 150-200 word summaries and action pointers
-- Auto-categorization into Work, Learning, Entertainment, News, Ideas
-- Auto-tagging for every saved item
-- Searchable knowledge base with filters and sort
-- 100% local and free, runs on your own machine via LM Studio
+- Click the 📌 icon in your Mac menu bar, paste any URL, get a 150-200 word AI summary with action pointers in seconds.
+- Share any URL from your iPhone via the iOS Shortcuts share sheet and it lands in the same knowledge base.
+- Auto-categorizes into Work, Learning, Entertainment, News, or Ideas.
+- Auto-tags every item.
+- Stores everything locally in knowledge.json.
+- Displays in a dark, searchable knowledge base UI with filters and sort.
 
-## How It Works
+---
 
-1. Click the pin icon in your menu bar or tap Share on iPhone
-2. Paste or share any URL
-3. Local AI via LM Studio fetches and analyzes the content
-4. Summary and action pointers appear in your knowledge base instantly
+## Current Version: v0.1
 
-## Requirements
+**Goal:** Frictionless capture and trustworthy summaries.
 
-- macOS
-- Python 3.6+
-- LM Studio at https://lmstudio.ai with any capable local model loaded
+### What Is New in v0.1 (April 2026)
+
+- Replaced regex-based HTML extraction with trafilatura. Summaries are significantly cleaner and more accurate.
+- Added fetch failure guard: if a URL cannot be extracted, the LLM is not called and you get a clear notification instead of a garbage summary.
+- Fixed persistent delete: clicking X removes the item from knowledge.json permanently, not just from the page view.
+- Added auth token to the iPhone receiver endpoint. The iOS shortcut must send the correct Bearer token or the request is rejected.
+
+---
+
+## Stack
+
+- Python 3.14, rumps, trafilatura
+- LM Studio running Qwen 2.5 14B Instruct at localhost:1234
+- iOS Shortcuts for iPhone share sheet integration
+- Plain JSON storage, plain HTML knowledge base
+
+---
 
 ## Setup
 
-    git clone https://github.com/ShashankKarpal/content-digest-app.git
-    cd content-digest-app
-    pip3 install rumps --break-system-packages
-    python3 app.py
+### Mac Menu Bar App
 
-LM Studio must be running with a model loaded and local server started on port 1234.
+1. Clone this repo: `git clone https://github.com/ShashankKarpal/content-digest-app.git`
+2. Install dependencies: `/opt/homebrew/bin/python3 -m pip install rumps trafilatura --break-system-packages`
+3. Run LM Studio and load Qwen 2.5 14B Instruct. Start the local server on port 1234.
+4. Run the app: `/opt/homebrew/bin/python3 ~/content-digest-app/app.py`
 
-## iPhone Share Extension
+### iPhone Share Extension
 
-Uses iOS Shortcuts to send URLs from any app directly to your Mac over local WiFi.
+1. Open the Shortcuts app on iPhone.
+2. Create a new shortcut called "Save to Content Digest".
+3. Add a "Get Contents of URL" action:
+   - URL: `http://YOUR_MAC_IP:7778/add`
+   - Method: POST
+   - Headers: `Authorization: Bearer YOUR_AUTH_TOKEN`
+   - Body: JSON with key `url` and value set to the shared URL.
+4. Add the shortcut to your share sheet.
 
-Steps:
-1. Open Shortcuts app on iPhone
-2. Create new shortcut with URL action pointing to http://YOUR-MAC-IP:7778/add
-3. Add Get Contents of URL action with POST method and url: Shortcut Input in JSON body
-4. Enable Show in Share Sheet in shortcut settings
+Replace YOUR_MAC_IP with your Mac's local IP (System Settings, Wi-Fi, Details).
+Replace YOUR_AUTH_TOKEN with the value of AUTH_TOKEN in app.py line 22.
 
-## Credits
+---
 
-Reddit Tab Harvester Chrome extension originally built by u/sunlesshalo on Reddit (https://github.com/sunlesshalo/reddit-tab-harvester) and extended with LM Studio support, LinkedIn harvesting, and unified knowledge base.
+## Roadmap
 
-Mac menu bar app and iPhone integration built using Claude by Shashank Karpal.
+| Version | Goal | Status |
+|---|---|---|
+| v0.1 | Frictionless capture and trustworthy summaries | In progress |
+| v0.2 | Return loop: digest email and item states | Planned |
+| v0.3 | Reduce overload: grouping, ranking, suppress clutter | Planned |
+| v1 | Thoughtful assistant: personalization and patterns | Planned |
 
-Special thanks to Karl (https://github.com/karlbaz) for contributions and feedback.
+---
 
-## License
+## Known Limitations
 
-MIT
+- LM Studio must be running for summarization to work.
+- Mac IP may change on different networks. Update the iPhone shortcut if it stops working.
+- Reddit integration is pending API approval.
+- LinkedIn saved posts harvesting is planned but not yet built.
