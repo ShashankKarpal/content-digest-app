@@ -18,7 +18,7 @@ BASE_DIR = Path.home() / "content-digest-app"
 DATA_FILE = BASE_DIR / "knowledge.json"
 HTML_FILE = BASE_DIR / "knowledge.html"
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
-MODEL = "qwen2.5-14b-instruct-1m"
+MODEL = "qwen3-14b-mlx"
 AUTH_TOKEN = "YOUR_TOKEN_HERE"
 
 
@@ -64,12 +64,19 @@ Return exactly this JSON:
   "relevance": 3
 }}
 
-Category guidelines:
-- Work: professional, career, business, productivity tools
-- Learning: tutorials, how-tos, educational, skills
-- Entertainment: fun, humor, interesting, culture
-- News: current events, announcements, updates
-- Ideas: concepts, strategy, frameworks, inspiration"""
+CATEGORY DECISION RULES (apply in this order, stop at first match):
+
+1. NEWS: published in the last 30 days AND reports on a specific event, announcement, product launch, funding round, acquisition, policy change, or industry development. Time-sensitive. If you would not save this to reference 6 months from now, it is News.
+
+2. ENTERTAINMENT: primary purpose is enjoyment, not utility. Movies, TV, music, sports, games, humor, lifestyle, celebrity, food-for-fun, travel-for-fun. If the content has no actionable takeaway and you saved it for pleasure, it is Entertainment.
+
+3. LEARNING: teaches a specific skill or explains how something works at a technical level. Tutorials, step-by-step guides, deep-dives into protocols, frameworks, languages, tools, scientific concepts, technical primers. Answers "how does X work" or "how do I do X". The Cloudflare proxy primer is Learning. A Kubernetes tutorial is Learning.
+
+4. IDEAS: opinion, essay, framework, mental model, philosophy, strategy thinking, perspective pieces, thought leadership without a step-by-step. Answers "how should I think about X". Paul Graham essays are Ideas. A piece on "the future of work" is Ideas. A LinkedIn growth playbook with specific tactics is Work, not Ideas.
+
+5. WORK: ONLY use if the content is directly applicable to a specific professional workflow: sales tactics, GTM playbooks, B2B strategy, hiring, management, business operations, productivity workflows you would action this week. Default away from Work. If unsure between Work and Learning, choose Learning. If unsure between Work and Ideas, choose Ideas.
+
+Pick exactly one. When in doubt between two, pick the one LATER in this list (News > Entertainment > Learning > Ideas > Work)."""
 
     try:
         body = json.dumps({
