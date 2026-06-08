@@ -221,21 +221,46 @@ def send_email(config, subject, body):
         server.send_message(msg)
 
 
+def format_empty_email_body(send_date, total_items):
+    """HTML body when no items saved in last 24h."""
+    date_str = send_date.strftime("%A, %B %d, %Y")
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background-color:#0F172A;font-family:Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:24px 16px;background-color:#0F172A;">
+  <div style="text-align:center;margin-bottom:24px;">
+    <div style="font-size:24px;font-weight:bold;color:#F97316;">Content Digest</div>
+    <div style="font-size:14px;color:#9CA3AF;margin-top:4px;">{date_str}</div>
+  </div>
+  <div style="background:#1E293B;border-radius:12px;padding:24px;text-align:center;">
+    <div style="font-size:18px;color:#F1F5F9;font-weight:bold;margin-bottom:12px;">No new saves in the last 24 hours</div>
+    <div style="font-size:14px;color:#9CA3AF;line-height:1.6;">Your knowledge base has <strong style="color:#F97316;">{total_items}</strong> total items. Save something today to keep building.</div>
+  </div>
+  <div style="text-align:center;margin-top:24px;font-size:12px;color:#64748B;">
+    Sent daily at 7:00 AM Dubai time
+  </div>
+</div>
+</body>
+</html>"""
+
+
 def main():
     log("Daily brief started.")
     try:
         config = load_config()
         data = load_knowledge()
-        recent = filter_last_24h(data.get("items", []))
-
-        if not recent:
-            log("No items in last 24 hours. Skipping send.")
-            return 0
-
-        grouped = group_by_category(recent)
+        all_items = data.get("items", [])
+        recent = filter_last_24h(all_items)
         send_date = datetime.now(DUBAI_OFFSET)
-        subject = f"Content Digest, {send_date.strftime('%A %B %d')}: {len(recent)} saves"
-        body = format_email_body(grouped, send_date)
+
+        if recent:
+            grouped = group_by_category(recent)
+            subject = f"Content Digest, {send_date.strftime('%A %B %d')}: {len(recent)} saves"
+            body = format_email_body(grouped, send_date)
+        else:
+            subject = f"Content Digest, {send_date.strftime('%A %B %d')}: no new saves"
+            body = format_empty_email_body(send_date, len(all_items))
 
         send_email(config, subject, body)
         log(f"Sent brief with {len(recent)} items to {config['recipient']}.")
