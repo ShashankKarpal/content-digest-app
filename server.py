@@ -5,7 +5,7 @@ import json
 import re
 import threading
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -169,7 +169,7 @@ def process_url(url):
             "category": analysis.get("category", "Ideas"),
             "tags": analysis.get("tags", []),
             "relevance": analysis.get("relevance", 3),
-            "saved_at": datetime.now().isoformat(),
+            "saved_at": datetime.now(timezone(timedelta(hours=4))).isoformat(),
         }
         data["items"].insert(0, item)
         _save_data(data)
