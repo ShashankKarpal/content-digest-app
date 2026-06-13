@@ -6,22 +6,27 @@ import re
 import threading
 import urllib.request
 from datetime import datetime, timezone, timedelta
+import fcntl
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 BASE_DIR = Path.home() / "content-digest-app"
 DATA_FILE = BASE_DIR / "knowledge.json"
+FAILURES_FILE = BASE_DIR / "failures.json"
 HTML_FILE = BASE_DIR / "knowledge.html"
+INBOX_FILE = BASE_DIR / "inbox.json"
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "qwen2.5:3b"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_API_KEY = json.loads(Path(BASE_DIR / "secrets.json").read_text()).get("groq_api_key", "")
+_SECRETS = json.loads(Path(BASE_DIR / "secrets.json").read_text())
+GROQ_API_KEY = _SECRETS.get("groq_api_key", "")
 GROQ_MODEL = "llama3-8b-8192"
 
-AUTH_TOKEN = "REMOVED"
+AUTH_TOKEN = _SECRETS.get("auth_token", "")
 
 is_processing = False
+data_lock = threading.Lock()
 
 
 def _load_data():
@@ -37,21 +42,32 @@ def _save_data(data):
 
 
 def fetch_url_content(url):
+    import urllib.request
+    ua = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'}
+    # Primary: direct fetch + trafilatura extraction
     try:
         import trafilatura
-        import urllib.request
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
-        })
+        req = urllib.request.Request(url, headers=ua)
         with urllib.request.urlopen(req, timeout=15) as r:
             html = r.read().decode('utf-8', errors='ignore')
         text = trafilatura.extract(html, include_comments=False, include_tables=True)
-        if not text:
-            return None
-        return text[:3000]
+        if text:
+            return text[:3000]
+        print('[fetch] direct extract empty; trying reader proxy')
     except Exception as e:
-        print(f'[fetch error] {e}')
-        return None
+        print(f'[fetch error] direct: {e}; trying reader proxy')
+    # Fallback: reader proxy for sites that block direct fetch (e.g. LinkedIn)
+    try:
+        req = urllib.request.Request('https://r.jina.ai/' + url, headers=ua)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            md = r.read().decode('utf-8', errors='ignore')
+        if md and len(md.strip()) > 100:
+            print('[fetch] reader proxy succeeded')
+            return md[:3000]
+        print('[fetch] reader proxy returned too little')
+    except Exception as e:
+        print(f'[fetch error] reader proxy: {e}')
+    return None
 
 
 def _build_prompt(url, content):
@@ -148,40 +164,139 @@ def analyze_with_ai(url, content):
         raise Exception("All AI endpoints unavailable")
 
 
+
+
+def _load_failures():
+    if not FAILURES_FILE.exists():
+        return {"items": []}
+    with open(FAILURES_FILE, "r") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        try:
+            return json.load(f)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _save_failures(data):
+    with open(FAILURES_FILE, "w") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            json.dump(data, f, indent=2)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _record_inbox(url):
+    now = datetime.now(timezone(timedelta(hours=4))).isoformat()
+    try:
+        inbox = json.loads(INBOX_FILE.read_text()) if INBOX_FILE.exists() else {"items": []}
+    except Exception:
+        inbox = {"items": []}
+    inbox["items"].insert(0, {"url": url, "received_at": now})
+    tmp = INBOX_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(inbox, indent=2))
+    tmp.rename(INBOX_FILE)
+    print("[inbox] Captured: " + url[:60])
+
+
+def _record_failure(url, error_type, error_reason):
+    now = datetime.now(timezone(timedelta(hours=4))).isoformat()
+    failures = _load_failures()
+    existing = next((f for f in failures["items"] if f["url"] == url), None)
+    if existing:
+        existing["last_failed_at"] = now
+        existing["retry_count"] = existing.get("retry_count", 0) + 1
+        existing["error_type"] = error_type
+        existing["error_reason"] = error_reason
+    else:
+        failures["items"].insert(0, {
+            "url": url,
+            "first_failed_at": now,
+            "last_failed_at": now,
+            "retry_count": 0,
+            "error_type": error_type,
+            "error_reason": error_reason,
+        })
+    _save_failures(failures)
+    print("[failure] Recorded " + error_type + ": " + url[:60])
+
+
+def _remove_failure(url):
+    failures = _load_failures()
+    before = len(failures["items"])
+    failures["items"] = [f for f in failures["items"] if f["url"] != url]
+    if len(failures["items"]) < before:
+        _save_failures(failures)
+
+
+def _self_heal_failures():
+    data = _load_data()
+    saved_urls = {i["url"] for i in data["items"]}
+    failures = _load_failures()
+    before = len(failures["items"])
+    failures["items"] = [f for f in failures["items"] if f["url"] not in saved_urls]
+    removed = before - len(failures["items"])
+    if removed > 0:
+        _save_failures(failures)
+        print("[startup] Self-healed " + str(removed) + " stale failure(s)")
+
+
 def process_url(url):
     global is_processing
     try:
         is_processing = True
-        content = fetch_url_content(url)
-        if content is None:
-            print(f"[error] Could not fetch: {url[:60]}")
-            return
-        analysis = analyze_with_ai(url, content)
         data = _load_data()
         if url in [i["url"] for i in data["items"]]:
             print(f"[skip] Already saved: {url[:60]}")
-            return
-        item = {
-            "url": url,
-            "title": analysis.get("title", url[:60]),
-            "summary": analysis.get("summary", "No summary available"),
-            "action_points": analysis.get("action_points", []),
-            "category": analysis.get("category", "Ideas"),
-            "tags": analysis.get("tags", []),
-            "relevance": analysis.get("relevance", 3),
-            "saved_at": datetime.now(timezone(timedelta(hours=4))).isoformat(),
-        }
-        data["items"].insert(0, item)
-        _save_data(data)
-        HTML_FILE.write_text(build_html(data["items"]))
-        print(f"[saved] {item['title']} ({item['category']})")
-    except Exception as e:
-        print(f"[error] {e}")
+            _remove_failure(url)
+            return {"status": "already_saved", "url": url}
+        try:
+            content = fetch_url_content(url)
+            if content is None:
+                _record_failure(url, "fetch", "Could not fetch URL content")
+                print(f"[error] Could not fetch: {url[:60]}")
+                return {"status": "failed", "error_type": "fetch", "reason": "Could not fetch URL content"}
+        except Exception as e:
+            _record_failure(url, "fetch", f"{type(e).__name__}: {str(e)[:200]}")
+            print(f"[error] Fetch failed: {e}")
+            return {"status": "failed", "error_type": "fetch", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+        try:
+            analysis = analyze_with_ai(url, content)
+        except Exception as e:
+            _record_failure(url, "ai", f"{type(e).__name__}: {str(e)[:200]}")
+            print(f"[error] AI failed: {e}")
+            return {"status": "failed", "error_type": "ai", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+        try:
+            item = {
+                "url": url,
+                "title": analysis.get("title", url[:60]),
+                "summary": analysis.get("summary", "No summary available"),
+                "action_points": analysis.get("action_points", []),
+                "category": analysis.get("category", "Ideas"),
+                "tags": analysis.get("tags", []),
+                "relevance": analysis.get("relevance", 3),
+                "saved_at": datetime.now(timezone(timedelta(hours=4))).isoformat(),
+            }
+            with data_lock:
+                fresh = _load_data()
+                if url not in [i["url"] for i in fresh["items"]]:
+                    fresh["items"].insert(0, item)
+                    _save_data(fresh)
+            _remove_failure(url)
+            HTML_FILE.write_text(build_html(_load_data()["items"]))
+            print(f"[saved] {item['title']} ({item['category']})")
+            return {"status": "saved", "title": item["title"], "category": item["category"]}
+        except Exception as e:
+            _record_failure(url, "storage", f"{type(e).__name__}: {str(e)[:200]}")
+            print(f"[error] Storage failed: {e}")
+            return {"status": "failed", "error_type": "storage", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
     finally:
         is_processing = False
 
 
-def build_html(items):
+def build_html(items, failures=None):
+    if failures is None:
+        failures = _load_failures().get("items", [])
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -221,6 +336,20 @@ def build_html(items):
   .search-toggle {{ display: flex; gap: 4px; }}
   .search-toggle button {{ background: #1e1e1e; border: 1px solid #333; color: #aaa; padding: 6px 12px; border-radius: 20px; cursor: pointer; font-size: 12px; font-family: 'Montserrat', sans-serif; }}
   .search-toggle button.s-active {{ background: #2a2a2a; color: #ff9f1c; border-color: #ff9f1c; font-weight: 600; }}
+  .filters button.failed-btn {{ border-color: #c83232; color: #ff6b6b; }}
+  .filters button.failed-btn.active {{ background: #c83232; color: #fff; border-color: #c83232; }}
+  .failure-card {{ background: #2a1a1a; border-left: 4px solid #c83232; padding: 16px; border-radius: 8px; margin-bottom: 12px; }}
+  .failure-card .url {{ color: #ff9f1c; word-break: break-all; font-size: 13px; margin-bottom: 8px; }}
+  .failure-card .meta {{ color: #888; font-size: 12px; margin-bottom: 8px; }}
+  .failure-card .reason {{ color: #ff6b6b; font-size: 12px; margin-bottom: 12px; background: #1a0e0e; padding: 8px; border-radius: 4px; font-family: monospace; word-break: break-word; }}
+  .failure-card .actions {{ display: flex; gap: 8px; }}
+  .failure-card button {{ background: #1e1e1e; border: 1px solid #444; color: #ccc; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: 'Montserrat', sans-serif; }}
+  .failure-card button.retry-btn {{ border-color: #ff9f1c; color: #ff9f1c; }}
+  .failure-card button.retry-btn:hover {{ background: #ff9f1c; color: #000; }}
+  .failure-card button.delete-btn:hover {{ background: #c83232; color: #fff; border-color: #c83232; }}
+  .badge-fetch {{ background: #c83232; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
+  .badge-ai {{ background: #c87a32; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
+  .badge-storage {{ background: #6b32c8; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
 </style>
 </head>
 <body>
@@ -232,6 +361,7 @@ def build_html(items):
   <button data-cat="News">News</button>
   <button data-cat="Ideas">Ideas</button>
   <button data-cat="Entertainment">Entertainment</button>
+  <button data-cat="Failed" class="failed-btn">Failed ({len(failures)})</button>
   <select id="sort-select">
     <option value="newest">Newest first</option>
     <option value="oldest">Oldest first</option>
@@ -253,6 +383,7 @@ def build_html(items):
 <div id="empty-state" style="display:none">No items saved yet. Add a URL to get started.</div>
 <script>
 var DATA = {json.dumps(items)};
+var FAILURES = {json.dumps(failures)};
 var currentFilter = "All";
 var currentSort = "newest";
 var currentSearch = "";
@@ -267,6 +398,45 @@ function formatDate(s) {{
 }}
 function render() {{
   var q = currentSearch.toLowerCase().trim();
+  if (currentFilter === "Failed") {{
+    var failContainer = document.getElementById("items-container");
+    var failEmpty = document.getElementById("empty-state");
+    document.getElementById("count").textContent = "(" + FAILURES.length + ")";
+    if (FAILURES.length === 0) {{
+      failContainer.innerHTML = "";
+      failEmpty.textContent = "No failed URLs. Everything you have shared has been processed successfully.";
+      failEmpty.style.display = "block";
+      return;
+    }}
+    failEmpty.style.display = "none";
+    var filtered = FAILURES.filter(f => {{
+      if (!q) return true;
+      return (f.url || "").toLowerCase().includes(q) ||
+             (f.error_reason || "").toLowerCase().includes(q);
+    }});
+    if (filtered.length === 0) {{
+      failContainer.innerHTML = "";
+      failEmpty.textContent = "No failures match: " + q;
+      failEmpty.style.display = "block";
+      return;
+    }}
+    failContainer.innerHTML = filtered.map(f => {{
+      var firstDate = formatDate(f.first_failed_at);
+      var lastDate = formatDate(f.last_failed_at);
+      var retryNote = (f.retry_count > 0) ? " | Retried " + f.retry_count + " time(s)" : "";
+      var badgeClass = "badge-" + (f.error_type || "fetch");
+      return `<div class="failure-card" data-url="${{escapeHtml(f.url)}}">
+        <div class="meta"><span class="${{badgeClass}}">${{escapeHtml(f.error_type || "unknown")}}</span> &nbsp; First failed: ${{firstDate}}${{retryNote}}</div>
+        <div class="url"><a href="${{f.url}}" target="_blank" style="color:#ff9f1c;">${{escapeHtml(f.url)}}</a></div>
+        <div class="reason">${{escapeHtml(f.error_reason || "No reason recorded")}}</div>
+        <div class="actions">
+          <button class="retry-btn" onclick="retryFailure(this)">Retry</button>
+          <button class="delete-btn" onclick="deleteFailure(this)">Delete</button>
+        </div>
+      </div>`;
+    }}).join("");
+    return;
+  }}
   var items = DATA.filter(i => {{
     if (currentFilter !== "All" && i.category !== currentFilter) return false;
     if (!q) return true;
@@ -317,6 +487,38 @@ function dismissItem(btn) {{
     body: JSON.stringify({{url: url}})
   }}).catch(e => console.warn("Delete sync failed:", e));
 }}
+function retryFailure(btn) {{
+  var card = btn.closest(".failure-card");
+  var url = card.dataset.url;
+  btn.textContent = "Retrying...";
+  btn.disabled = true;
+  fetch("/retry", {{
+    method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{url: url}})
+  }}).then(() => {{
+    setTimeout(() => {{ window.location.reload(); }}, 4000);
+  }}).catch(e => {{
+    btn.textContent = "Retry";
+    btn.disabled = false;
+    console.warn("Retry failed:", e);
+  }});
+}}
+function deleteFailure(btn) {{
+  var card = btn.closest(".failure-card");
+  var url = card.dataset.url;
+  var idx = FAILURES.findIndex(f => f.url === url);
+  if (idx !== -1) FAILURES.splice(idx, 1);
+  card.remove();
+  var failBtn = document.querySelector(".filters button.failed-btn");
+  if (failBtn) failBtn.textContent = "Failed (" + FAILURES.length + ")";
+  if (currentFilter === "Failed") document.getElementById("count").textContent = "(" + FAILURES.length + ")";
+  fetch("/failures/delete", {{
+    method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{url: url}})
+  }}).catch(e => console.warn("Failure delete sync failed:", e));
+}}
 document.querySelectorAll(".filters button").forEach(btn => {{
   btn.addEventListener("click", () => {{
     document.querySelectorAll(".filters button").forEach(b => b.classList.remove("active"));
@@ -355,12 +557,12 @@ render();
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/view":
-            if HTML_FILE.exists():
-                html = HTML_FILE.read_text()
-            else:
-                data = _load_data()
-                html = build_html(data["items"])
+            try:
+                html = build_html(_load_data()["items"])
                 HTML_FILE.write_text(html)
+            except Exception as e:
+                print(f"[view] Rebuild failed ({e}), serving cached")
+                html = HTML_FILE.read_text() if HTML_FILE.exists() else "<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:40px'>Content Digest is temporarily unavailable. Try again shortly.</body></html>"
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
@@ -371,6 +573,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "processing": is_processing}).encode())
+            return
+        if self.path == "/failures":
+            failures = _load_failures()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(failures).encode())
             return
         self.send_response(404)
         self.end_headers()
@@ -383,7 +593,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path != "/delete":
+        # Read the body FIRST so the URL is captured before auth or fetch can fail.
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except Exception:
+            body = {}
+
+        is_ingest = self.path not in ("/delete", "/retry", "/failures/delete")
+
+        # Durable inbox capture: record every incoming link before auth and fetch.
+        if is_ingest:
+            _inbox_url = body.get("url", "").strip()
+            if _inbox_url:
+                _record_inbox(_inbox_url)
+
+        # Auth gate runs AFTER capture, so a rejected link is still recorded.
+        if is_ingest:
             auth = self.headers.get("Authorization", "")
             if auth != f"Bearer {AUTH_TOKEN}":
                 self.send_response(401)
@@ -392,8 +618,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": "Unauthorized"}).encode())
                 return
 
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length))
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -409,6 +633,32 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True}).encode())
             return
 
+        if self.path == "/failures/delete":
+            url = body.get("url", "").strip()
+            if url:
+                _remove_failure(url)
+                HTML_FILE.write_text(build_html(_load_data()["items"]))
+            self.wfile.write(json.dumps({"ok": True}).encode())
+            return
+
+        if self.path == "/retry":
+            url = body.get("url", "").strip()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+            if url.startswith(("http://", "https://")):
+                threading.Thread(target=process_url, args=(url,), daemon=True).start()
+            return
+
+        if self.path == "/add_sync":
+            url = body.get("url", "").strip()
+            if not url.startswith(("http://", "https://")):
+                self.wfile.write(json.dumps({"status": "invalid", "reason": "Not a valid URL"}).encode())
+                return
+            result = process_url(url)
+            if result is None:
+                result = {"status": "unknown"}
+            self.wfile.write(json.dumps(result).encode())
+            return
+
         url = body.get("url", "").strip()
         self.wfile.write(json.dumps({"ok": True}).encode())
         if url.startswith(("http://", "https://")):
@@ -420,6 +670,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     BASE_DIR.mkdir(exist_ok=True)
+    _self_heal_failures()
     print("[server] Content Digest server starting on 0.0.0.0:7778")
     server = HTTPServer(("0.0.0.0", 7778), Handler)
     server.serve_forever()
