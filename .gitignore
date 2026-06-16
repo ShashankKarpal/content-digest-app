@@ -1,2 +1,19 @@
 secrets.json
 inbox.json
+
+# --- hardened: runtime, config, secrets, dev artifacts ---
+.DS_Store
+__pycache__/
+*.pyc
+*.backup
+*.bak
+*.save
+*.log
+.env
+*.key
+*.pem
+config.json
+config.json.save
+failures.json
+knowledge.html
+docs/
