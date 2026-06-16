@@ -17,3 +17,4 @@ config.json.save
 failures.json
 knowledge.html
 docs/
+knowledge.json
