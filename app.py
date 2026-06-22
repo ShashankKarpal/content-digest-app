@@ -19,7 +19,12 @@ DATA_FILE = BASE_DIR / "knowledge.json"
 HTML_FILE = BASE_DIR / "knowledge.html"
 
 # AI endpoint config
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from local_settings import OLLAMA_URL
+except ImportError:
+    OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 OLLAMA_MODEL = "qwen2.5:3b"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_API_KEY = "YOUR_GROQ_KEY_HERE"
