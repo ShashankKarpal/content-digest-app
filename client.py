@@ -7,7 +7,12 @@ import urllib.request
 import webbrowser
 import rumps
 
-SERVER = "http://127.0.0.1:7778"
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from local_settings import SERVER
+except ImportError:
+    SERVER = "http://127.0.0.1:7778"
 AUTH_TOKEN = "YOUR_TOKEN_HERE"
 
 
