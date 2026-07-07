@@ -19,3 +19,8 @@ knowledge.html
 docs/
 knowledge.json
 local_settings.py
+
+# hardening baseline
+*.db
+*.sqlite
+credentials.*
