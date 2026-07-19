@@ -13,7 +13,13 @@ try:
     from local_settings import SERVER
 except ImportError:
     SERVER = "http://127.0.0.1:7778"
-AUTH_TOKEN = "YOUR_TOKEN_HERE"
+
+# Auth token lives in gitignored secrets.json, never hardcoded here.
+try:
+    _secrets_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "secrets.json")
+    AUTH_TOKEN = json.load(open(_secrets_path)).get("auth_token", "")
+except Exception:
+    AUTH_TOKEN = ""
 
 
 class ContentDigestClient(rumps.App):
@@ -49,7 +55,7 @@ class ContentDigestClient(rumps.App):
                     "Authorization": f"Bearer {AUTH_TOKEN}"
                 }
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 json.loads(resp.read().decode())
             rumps.notification("Content Digest", "URL sent", f"Processing: {url[:60]}")
         except Exception as e:

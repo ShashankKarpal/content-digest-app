@@ -2,26 +2,40 @@
 """Content Digest Server -- headless, always-on URL processor."""
 
 import json
+import math
 import re
+import sys
 import threading
+import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 import fcntl
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 BASE_DIR = Path.home() / "content-digest-app"
+sys.path.insert(0, str(BASE_DIR))
+from extractors import get_extractor, normalize_url
+
 DATA_FILE = BASE_DIR / "knowledge.json"
 FAILURES_FILE = BASE_DIR / "failures.json"
 HTML_FILE = BASE_DIR / "knowledge.html"
 INBOX_FILE = BASE_DIR / "inbox.json"
+EMB_FILE = BASE_DIR / "embeddings.json"
+
+VALID_CATEGORIES = {"Work", "Learning", "Entertainment", "News", "Ideas"}
+VALID_STATES = {"act", "revisit", "archive", ""}
+RETRY_INTERVAL_HOURS = 6
+MAX_AUTO_RETRIES = 3
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
+OLLAMA_EMBED_MODEL = "nomic-embed-text"
 OLLAMA_MODEL = "qwen2.5:3b"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _SECRETS = json.loads(Path(BASE_DIR / "secrets.json").read_text())
 GROQ_API_KEY = _SECRETS.get("groq_api_key", "")
-GROQ_MODEL = "llama3-8b-8192"
+GROQ_MODEL = "llama-3.1-8b-instant"  # llama3-8b-8192 decommissioned by Groq (verified 2026-07-19)
 
 AUTH_TOKEN = _SECRETS.get("auth_token", "")
 
@@ -44,6 +58,21 @@ def _save_data(data):
 def fetch_url_content(url):
     import urllib.request
     ua = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'}
+    # Source-aware extractors first (Reddit, YouTube, X). Reddit is exclusive:
+    # the generic path is known-blocked (direct fetch 403s, jina IPs banned),
+    # so falling through would only waste two timeouts.
+    extractor, exclusive = get_extractor(url)
+    if extractor:
+        try:
+            text = extractor(url)
+        except Exception as e:
+            print(f'[fetch] extractor error: {type(e).__name__}: {e}')
+            text = None
+        if text:
+            return text
+        if exclusive:
+            return None
+        print('[fetch] extractor empty; falling back to generic path')
     # Primary: direct fetch + trafilatura extraction
     try:
         import trafilatura
@@ -139,7 +168,8 @@ def _try_groq(prompt):
         data=body,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {GROQ_API_KEY}"
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "User-Agent": "content-digest/0.4",  # Groq 403s the default Python-urllib UA
         }
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -162,6 +192,156 @@ def analyze_with_ai(url, content):
     except Exception as e:
         print(f"[ai] Groq also failed ({e})")
         raise Exception("All AI endpoints unavailable")
+
+
+def validate_analysis(analysis, url):
+    """Enforce the JSON contract before anything touches storage."""
+    if not isinstance(analysis, dict):
+        raise ValueError("AI response is not a JSON object")
+    clean = {}
+    title = analysis.get("title")
+    clean["title"] = str(title).strip()[:120] if title else url[:60]
+    summary = analysis.get("summary")
+    clean["summary"] = str(summary).strip()[:2000] if summary else "No summary available"
+    aps = analysis.get("action_points")
+    clean["action_points"] = [str(a).strip()[:300] for a in aps if str(a).strip()][:5] if isinstance(aps, list) else []
+    cat = str(analysis.get("category", "")).strip().title()
+    clean["category"] = cat if cat in VALID_CATEGORIES else "Ideas"
+    tags = analysis.get("tags")
+    clean["tags"] = [str(t).strip()[:40] for t in tags if str(t).strip()][:6] if isinstance(tags, list) else []
+    try:
+        clean["relevance"] = max(1, min(5, int(analysis.get("relevance", 3))))
+    except (TypeError, ValueError):
+        clean["relevance"] = 3
+    return clean
+
+
+# ---------------------------------------------------------------------------
+# Semantic search: local embeddings via Ollama, cosine retrieval, ask endpoint
+# ---------------------------------------------------------------------------
+
+emb_lock = threading.Lock()
+
+
+def _load_embeddings():
+    if EMB_FILE.exists():
+        try:
+            return json.loads(EMB_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_embeddings(embs):
+    tmp = EMB_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(embs))
+    tmp.rename(EMB_FILE)
+
+
+def embed_text(text):
+    """Return an embedding vector via local Ollama, or None (graceful skip)."""
+    try:
+        body = json.dumps({"model": OLLAMA_EMBED_MODEL, "prompt": text[:2000]}).encode()
+        req = urllib.request.Request(
+            OLLAMA_EMBED_URL, data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            vec = json.loads(resp.read().decode()).get("embedding")
+        return vec if vec else None
+    except Exception as e:
+        print(f"[embed] unavailable ({type(e).__name__}); skipping")
+        return None
+
+
+def _item_embed_source(item):
+    return f"{item.get('title', '')}\n{item.get('summary', '')}\n{' '.join(item.get('tags', []))}"
+
+
+def embed_item(item):
+    vec = embed_text(_item_embed_source(item))
+    if vec is None:
+        return
+    with emb_lock:
+        embs = _load_embeddings()
+        embs[item["url"]] = vec
+        _save_embeddings(embs)
+
+
+def _cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def backfill_embeddings():
+    """Embed any saved items that do not have vectors yet. Runs at startup."""
+    embs = _load_embeddings()
+    items = _load_data()["items"]
+    missing = [i for i in items if i["url"] not in embs]
+    if not missing:
+        return
+    print(f"[embed] Backfilling {len(missing)} item(s)")
+    done = 0
+    for item in missing:
+        vec = embed_text(_item_embed_source(item))
+        if vec is None:
+            print("[embed] Backfill aborted: embedding endpoint unavailable")
+            return
+        with emb_lock:
+            embs = _load_embeddings()
+            embs[item["url"]] = vec
+            _save_embeddings(embs)
+        done += 1
+    print(f"[embed] Backfilled {done} item(s)")
+
+
+def answer_question(question):
+    """Retrieve the most relevant saved items and answer from them."""
+    qvec = embed_text(question)
+    items = _load_data()["items"]
+    scored = []
+    if qvec:
+        embs = _load_embeddings()
+        for item in items:
+            vec = embs.get(item["url"])
+            if vec:
+                scored.append((_cosine(qvec, vec), item))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [i for _, i in scored[:6]]
+    else:
+        # Degraded mode: keyword match when no embedding model is available
+        q = question.lower()
+        words = [w for w in re.split(r"\W+", q) if len(w) > 2]
+        def kw_score(i):
+            hay = f"{i.get('title','')} {i.get('summary','')} {' '.join(i.get('tags', []))}".lower()
+            return sum(1 for w in words if w in hay)
+        ranked = sorted(items, key=kw_score, reverse=True)
+        top = [i for i in ranked[:6] if kw_score(i) > 0]
+    if not top:
+        return {"answer": "Nothing in your knowledge base matches that question yet.", "sources": []}
+    context = "\n\n".join(
+        f"[{n+1}] {i['title']}\nSummary: {i['summary']}\nURL: {i['url']}"
+        for n, i in enumerate(top))
+    prompt = f"""You are the user's personal knowledge base assistant. Answer the question using ONLY the saved items below. Be concise and specific. Cite items as [1], [2] etc. If the items do not contain the answer, say so plainly.
+
+Question: {question}
+
+Saved items:
+{context}
+
+Answer:"""
+    try:
+        answer = _try_ollama(prompt)
+    except Exception:
+        try:
+            answer = _try_groq(prompt)
+        except Exception:
+            return {"answer": "AI endpoints are unavailable right now. Here are the closest matches instead.",
+                    "sources": [{"title": i["title"], "url": i["url"]} for i in top]}
+    answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+    return {"answer": answer[:3000],
+            "sources": [{"title": i["title"], "url": i["url"]} for i in top]}
 
 
 
@@ -241,27 +421,34 @@ def _self_heal_failures():
         print("[startup] Self-healed " + str(removed) + " stale failure(s)")
 
 
-def process_url(url):
+def process_url(url, content=None):
+    """Process one URL end to end. If content is provided (browser-side capture
+    from the Chrome extension), the fetch step is skipped entirely."""
     global is_processing
     try:
         is_processing = True
+        url = normalize_url(url)
         data = _load_data()
         if url in [i["url"] for i in data["items"]]:
             print(f"[skip] Already saved: {url[:60]}")
             _remove_failure(url)
             return {"status": "already_saved", "url": url}
+        if content:
+            content = str(content).strip()[:3000]
+            print(f"[fetch] Using browser-captured content ({len(content)} chars)")
+        if not content:
+            try:
+                content = fetch_url_content(url)
+                if content is None:
+                    _record_failure(url, "fetch", "Could not fetch URL content")
+                    print(f"[error] Could not fetch: {url[:60]}")
+                    return {"status": "failed", "error_type": "fetch", "reason": "Could not fetch URL content"}
+            except Exception as e:
+                _record_failure(url, "fetch", f"{type(e).__name__}: {str(e)[:200]}")
+                print(f"[error] Fetch failed: {e}")
+                return {"status": "failed", "error_type": "fetch", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
         try:
-            content = fetch_url_content(url)
-            if content is None:
-                _record_failure(url, "fetch", "Could not fetch URL content")
-                print(f"[error] Could not fetch: {url[:60]}")
-                return {"status": "failed", "error_type": "fetch", "reason": "Could not fetch URL content"}
-        except Exception as e:
-            _record_failure(url, "fetch", f"{type(e).__name__}: {str(e)[:200]}")
-            print(f"[error] Fetch failed: {e}")
-            return {"status": "failed", "error_type": "fetch", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
-        try:
-            analysis = analyze_with_ai(url, content)
+            analysis = validate_analysis(analyze_with_ai(url, content), url)
         except Exception as e:
             _record_failure(url, "ai", f"{type(e).__name__}: {str(e)[:200]}")
             print(f"[error] AI failed: {e}")
@@ -269,12 +456,13 @@ def process_url(url):
         try:
             item = {
                 "url": url,
-                "title": analysis.get("title", url[:60]),
-                "summary": analysis.get("summary", "No summary available"),
-                "action_points": analysis.get("action_points", []),
-                "category": analysis.get("category", "Ideas"),
-                "tags": analysis.get("tags", []),
-                "relevance": analysis.get("relevance", 3),
+                "title": analysis["title"],
+                "summary": analysis["summary"],
+                "action_points": analysis["action_points"],
+                "category": analysis["category"],
+                "tags": analysis["tags"],
+                "relevance": analysis["relevance"],
+                "state": "",
                 "saved_at": datetime.now(timezone(timedelta(hours=4))).isoformat(),
             }
             with data_lock:
@@ -284,6 +472,7 @@ def process_url(url):
                     _save_data(fresh)
             _remove_failure(url)
             HTML_FILE.write_text(build_html(_load_data()["items"]))
+            threading.Thread(target=embed_item, args=(item,), daemon=True).start()
             print(f"[saved] {item['title']} ({item['category']})")
             return {"status": "saved", "title": item["title"], "category": item["category"]}
         except Exception as e:
@@ -292,6 +481,73 @@ def process_url(url):
             return {"status": "failed", "error_type": "storage", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
     finally:
         is_processing = False
+
+
+def set_item_state(url, state):
+    """Set act / revisit / archive on a saved item."""
+    if state not in VALID_STATES:
+        return False
+    with data_lock:
+        data = _load_data()
+        found = False
+        for item in data["items"]:
+            if item["url"] == url:
+                item["state"] = state
+                found = True
+                break
+        if found:
+            _save_data(data)
+            HTML_FILE.write_text(build_html(data["items"]))
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Self-healing capture: auto-retry failures, reconcile the inbox
+# ---------------------------------------------------------------------------
+
+def _reconcile_inbox():
+    """Queue inbox URLs that never became items or failures (dropped requests)."""
+    try:
+        inbox = json.loads(INBOX_FILE.read_text()) if INBOX_FILE.exists() else {"items": []}
+    except Exception:
+        return []
+    saved = {i["url"] for i in _load_data()["items"]}
+    failed = {f["url"] for f in _load_failures()["items"]}
+    cutoff = datetime.now(timezone(timedelta(hours=4))) - timedelta(minutes=30)
+    orphans = []
+    for entry in inbox["items"]:
+        raw = entry.get("url", "")
+        url = normalize_url(raw)
+        if not url or url in saved or url in failed or raw in saved or raw in failed:
+            continue
+        try:
+            received = datetime.fromisoformat(entry.get("received_at", ""))
+        except ValueError:
+            continue
+        if received < cutoff and url not in orphans:
+            orphans.append(url)
+    return orphans[:10]
+
+
+def retry_loop():
+    """Every RETRY_INTERVAL_HOURS: retry fetch failures (max MAX_AUTO_RETRIES)
+    and re-queue orphaned inbox URLs. Makes capture fire-and-forget."""
+    while True:
+        time.sleep(RETRY_INTERVAL_HOURS * 3600)
+        try:
+            retryable = [
+                f["url"] for f in _load_failures()["items"]
+                if f.get("error_type") == "fetch" and f.get("retry_count", 0) < MAX_AUTO_RETRIES
+            ][:10]
+            orphans = _reconcile_inbox()
+            queue = retryable + [u for u in orphans if u not in retryable]
+            if queue:
+                print(f"[retry] Sweep: {len(retryable)} failure(s), {len(orphans)} inbox orphan(s)")
+            for url in queue:
+                process_url(url)
+                time.sleep(20)
+        except Exception as e:
+            print(f"[retry] Sweep error: {type(e).__name__}: {e}")
 
 
 def build_html(items, failures=None):
@@ -350,10 +606,34 @@ def build_html(items, failures=None):
   .badge-fetch {{ background: #c83232; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
   .badge-ai {{ background: #c87a32; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
   .badge-storage {{ background: #6b32c8; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
+  .state-row {{ display: flex; gap: 6px; margin-top: 12px; }}
+  .state-row button {{ background: #1e1e1e; border: 1px solid #333; color: #888; padding: 4px 12px; border-radius: 14px; cursor: pointer; font-size: 11px; font-family: 'Montserrat', sans-serif; }}
+  .state-row button.st-act.on {{ background: #c83232; color: #fff; border-color: #c83232; font-weight: 600; }}
+  .state-row button.st-revisit.on {{ background: #3B82F6; color: #fff; border-color: #3B82F6; font-weight: 600; }}
+  .state-row button.st-archive.on {{ background: #444; color: #ddd; border-color: #555; font-weight: 600; }}
+  .item.archived {{ opacity: 0.55; }}
+  .state-pill {{ padding: 2px 8px; border-radius: 10px; font-size: 10px; margin-right: 8px; text-transform: uppercase; font-weight: 600; }}
+  .state-pill.act {{ background: #c83232; color: #fff; }}
+  .state-pill.revisit {{ background: #3B82F6; color: #fff; }}
+  .state-pill.archive {{ background: #444; color: #ccc; }}
+  .ask-row {{ display: flex; gap: 8px; margin-bottom: 16px; }}
+  .ask-row input {{ flex: 1; background: #1e1e1e; border: 1px solid #333; color: #e0e0e0; padding: 9px 14px; border-radius: 10px; font-size: 13px; outline: none; font-family: 'Montserrat', sans-serif; }}
+  .ask-row input:focus {{ border-color: #ff6b35; }}
+  .ask-row button {{ background: #ff6b35; border: none; color: #000; padding: 9px 18px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
+  .ask-row button:disabled {{ opacity: 0.5; cursor: wait; }}
+  #ask-answer {{ display: none; background: #16213e; border: 1px solid #2a3a5e; border-radius: 12px; padding: 16px; margin-bottom: 18px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: pre-wrap; }}
+  #ask-answer .ask-sources {{ margin-top: 10px; font-size: 12px; }}
+  #ask-answer .ask-sources a {{ color: #ff9f1c; text-decoration: none; display: block; margin-top: 4px; }}
+  #ask-answer .ask-close {{ float: right; background: none; border: none; color: #555; font-size: 16px; cursor: pointer; }}
 </style>
 </head>
 <body>
 <h1>Content Digest <span id="count"></span></h1>
+<div class="ask-row">
+  <input type="text" id="ask-input" placeholder="Ask your knowledge base... (e.g. what did I save about Kubernetes?)">
+  <button id="ask-btn">Ask</button>
+</div>
+<div id="ask-answer"></div>
 <div class="filters">
   <button class="active" data-cat="All">All</button>
   <button data-cat="Work">Work</button>
@@ -362,6 +642,13 @@ def build_html(items, failures=None):
   <button data-cat="Ideas">Ideas</button>
   <button data-cat="Entertainment">Entertainment</button>
   <button data-cat="Failed" class="failed-btn">Failed ({len(failures)})</button>
+  <select id="state-select">
+    <option value="active">Active (default)</option>
+    <option value="act">Act on this</option>
+    <option value="revisit">Revisit later</option>
+    <option value="archive">Archived</option>
+    <option value="all">Everything</option>
+  </select>
   <select id="sort-select">
     <option value="newest">Newest first</option>
     <option value="oldest">Oldest first</option>
@@ -387,6 +674,7 @@ var FAILURES = {json.dumps(failures)};
 var currentFilter = "All";
 var currentSort = "newest";
 var currentSearch = "";
+var currentState = "active";
 var searchMode = "all";
 var searchDebounce;
 function escapeHtml(s) {{
@@ -439,6 +727,11 @@ function render() {{
   }}
   var items = DATA.filter(i => {{
     if (currentFilter !== "All" && i.category !== currentFilter) return false;
+    var st = i.state || "";
+    if (currentState === "active" && st === "archive") return false;
+    if (currentState === "act" && st !== "act") return false;
+    if (currentState === "revisit" && st !== "revisit") return false;
+    if (currentState === "archive" && st !== "archive") return false;
     if (!q) return true;
     if (searchMode === "title") return (i.title || "").toLowerCase().includes(q);
     return (i.title || "").toLowerCase().includes(q) ||
@@ -463,15 +756,62 @@ function render() {{
   container.innerHTML = items.map(item => {{
     const tags = (item.tags || []).map(t => `<span class="tag">${{escapeHtml(t)}}</span>`).join("");
     const date = formatDate(item.saved_at);
-    return `<div class="item" data-url="${{escapeHtml(item.url)}}">
+    const st = item.state || "";
+    const statePill = st ? `<span class="state-pill ${{st}}">${{st === "act" ? "act on this" : st === "revisit" ? "revisit later" : "archived"}}</span>` : "";
+    const stateBtns = `<div class="state-row">
+        <button class="st-act${{st === "act" ? " on" : ""}}" onclick="setState(this, 'act')">Act</button>
+        <button class="st-revisit${{st === "revisit" ? " on" : ""}}" onclick="setState(this, 'revisit')">Later</button>
+        <button class="st-archive${{st === "archive" ? " on" : ""}}" onclick="setState(this, 'archive')">Archive</button>
+      </div>`;
+    return `<div class="item${{st === "archive" ? " archived" : ""}}" data-url="${{escapeHtml(item.url)}}">
       <button class="dismiss" onclick="dismissItem(this)" title="Remove">&times;</button>
       <h3><a href="${{item.url}}" target="_blank">${{escapeHtml(item.title)}}</a></h3>
-      <div class="meta"><span class="cat-tag">${{item.category}}</span>${{date}}</div>
+      <div class="meta">${{statePill}}<span class="cat-tag">${{item.category}}</span>${{date}}</div>
       <p class="summary">${{escapeHtml(item.summary)}}</p>
       ${{(item.action_points && item.action_points.length) ? `<div class="action-points"><strong style="color:#ff9f1c;font-size:13px;">Action Pointers</strong><ul style="margin-top:6px;padding-left:18px;color:#ccc;font-size:13px;line-height:1.8">${{item.action_points.map(a => `<li>${{escapeHtml(a)}}</li>`).join("")}}</ul></div>` : ""}}
       <div class="tags">${{tags}}</div>
+      ${{stateBtns}}
     </div>`;
   }}).join("");
+}}
+function setState(btn, state) {{
+  var card = btn.closest(".item");
+  var url = card.dataset.url;
+  var item = DATA.find(i => i.url === url);
+  var newState = (item && item.state === state) ? "" : state;
+  if (item) item.state = newState;
+  fetch("/state", {{
+    method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{url: url, state: newState}})
+  }}).catch(e => console.warn("State sync failed:", e));
+  render();
+}}
+function askKB() {{
+  var input = document.getElementById("ask-input");
+  var btn = document.getElementById("ask-btn");
+  var panel = document.getElementById("ask-answer");
+  var q = input.value.trim();
+  if (!q) return;
+  btn.disabled = true;
+  btn.textContent = "Thinking...";
+  panel.style.display = "block";
+  panel.textContent = "Searching your knowledge base...";
+  fetch("/ask", {{
+    method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{question: q}})
+  }}).then(r => r.json()).then(res => {{
+    var src = (res.sources || []).map(s => `<a href="${{s.url}}" target="_blank">&#8594; ${{escapeHtml(s.title)}}</a>`).join("");
+    panel.innerHTML = `<button class="ask-close" onclick="this.parentElement.style.display='none'">&times;</button>` +
+      escapeHtml(res.answer || "No answer.") +
+      (src ? `<div class="ask-sources"><strong style="color:#ff9f1c;">Sources</strong>${{src}}</div>` : "");
+  }}).catch(e => {{
+    panel.textContent = "Ask failed: " + e;
+  }}).finally(() => {{
+    btn.disabled = false;
+    btn.textContent = "Ask";
+  }});
 }}
 function dismissItem(btn) {{
   const card = btn.closest(".item");
@@ -528,6 +868,9 @@ document.querySelectorAll(".filters button").forEach(btn => {{
   }});
 }});
 document.getElementById("sort-select").addEventListener("change", e => {{ currentSort = e.target.value; render(); }});
+document.getElementById("state-select").addEventListener("change", e => {{ currentState = e.target.value; render(); }});
+document.getElementById("ask-btn").addEventListener("click", askKB);
+document.getElementById("ask-input").addEventListener("keydown", e => {{ if (e.key === "Enter") askKB(); }});
 document.getElementById("search-input").addEventListener("input", e => {{
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {{
@@ -600,7 +943,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             body = {}
 
-        is_ingest = self.path not in ("/delete", "/retry", "/failures/delete")
+        is_ingest = self.path not in ("/delete", "/retry", "/failures/delete", "/state", "/ask")
 
         # Durable inbox capture: record every incoming link before auth and fetch.
         if is_ingest:
@@ -648,12 +991,28 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=process_url, args=(url,), daemon=True).start()
             return
 
+        if self.path == "/state":
+            url = body.get("url", "").strip()
+            state = body.get("state", "").strip().lower()
+            ok = set_item_state(url, state)
+            self.wfile.write(json.dumps({"ok": ok}).encode())
+            return
+
+        if self.path == "/ask":
+            question = str(body.get("question", "")).strip()[:500]
+            if not question:
+                self.wfile.write(json.dumps({"answer": "Ask a question about your saved items.", "sources": []}).encode())
+                return
+            result = answer_question(question)
+            self.wfile.write(json.dumps(result).encode())
+            return
+
         if self.path == "/add_sync":
             url = body.get("url", "").strip()
             if not url.startswith(("http://", "https://")):
                 self.wfile.write(json.dumps({"status": "invalid", "reason": "Not a valid URL"}).encode())
                 return
-            result = process_url(url)
+            result = process_url(url, content=body.get("content"))
             if result is None:
                 result = {"status": "unknown"}
             self.wfile.write(json.dumps(result).encode())
@@ -662,7 +1021,7 @@ class Handler(BaseHTTPRequestHandler):
         url = body.get("url", "").strip()
         self.wfile.write(json.dumps({"ok": True}).encode())
         if url.startswith(("http://", "https://")):
-            threading.Thread(target=process_url, args=(url,), daemon=True).start()
+            threading.Thread(target=process_url, args=(url,), kwargs={"content": body.get("content")}, daemon=True).start()
 
     def log_message(self, format, *args):
         pass
@@ -671,6 +1030,11 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     BASE_DIR.mkdir(exist_ok=True)
     _self_heal_failures()
-    print("[server] Content Digest server starting on 0.0.0.0:7778")
-    server = HTTPServer(("0.0.0.0", 7778), Handler)
+    threading.Thread(target=retry_loop, daemon=True).start()
+    threading.Thread(target=backfill_embeddings, daemon=True).start()
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 7778
+    # ThreadingHTTPServer: a slow /ask or /add_sync must never block the
+    # iPhone shortcut, the menu bar client, or the Chrome extension.
+    print(f"[server] Content Digest server v0.4 starting on 0.0.0.0:{port}")
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()

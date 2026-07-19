@@ -15,6 +15,7 @@ __pycache__/
 config.json
 config.json.save
 failures.json
+embeddings.json
 knowledge.html
 docs/
 knowledge.json

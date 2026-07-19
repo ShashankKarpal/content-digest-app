@@ -15,11 +15,23 @@ A local Mac menu bar app that saves URLs, summarizes them with a local LLM, and 
 
 ---
 
-## Current Version: v0.1
+## Current Version: v0.4
 
-**Goal:** Frictionless capture and trustworthy summaries.
+**Goal:** Reddit works, people return (item states), and the knowledge base answers questions.
 
-### What Is New in v0.1 (April 2026)
+### What Is New in v0.4 (July 2026)
+
+- **Reddit summaries work.** No API approval needed: threads are fetched from old.reddit.com (post + top comments), with the arctic-shift archive as automatic fallback. Reddit's official Data API closed to new apps in Nov 2025; this route is verified working.
+- **Source-aware extractors** (extractors.py): Reddit threads, YouTube transcripts, X posts via fxtwitter. Everything else keeps using trafilatura.
+- **Item states:** mark any card Act / Later / Archive. States show in the UI, filter the knowledge base, and appear as pills in the morning brief. Archived items are excluded from the brief.
+- **Ask your knowledge base:** a question box above the filters. Uses local Ollama embeddings (nomic-embed-text) with keyword fallback, answers with cited sources.
+- **Self-healing capture:** fetch failures auto-retry every 6 hours (max 3 attempts); inbox URLs that never became items are re-queued.
+- **URL normalization:** tracking params (utm_*, fbclid, share_id, si...) stripped before dedup and storage.
+- **LLM output validation:** category whitelist, relevance bounds, shape checks before anything is saved.
+- **Chrome extension** (extension/): one click sends the rendered page text straight to the server. Works on Reddit, LinkedIn, and anything your logged-in browser can see.
+- **Fixes:** Groq fallback was silently broken twice over (llama3-8b-8192 decommissioned; Groq 403s the default Python urllib user agent). Both fixed and verified.
+
+### What Was New in v0.1 (April 2026)
 
 - Replaced regex-based HTML extraction with trafilatura. Summaries are significantly cleaner and more accurate.
 - Added fetch failure guard: if a URL cannot be extracted, the LLM is not called and you get a clear notification instead of a garbage summary.
@@ -73,9 +85,21 @@ Replace YOUR_AUTH_TOKEN with the value of AUTH_TOKEN in app.py line 22.
 
 ---
 
+## Chrome Extension Setup
+
+1. Open chrome://extensions, enable Developer mode.
+2. Load unpacked, select ~/content-digest-app/extension.
+3. Open the extension options, set your server URL and auth token (from secrets.json).
+4. Click the pin on any page (or right-click, Save to Content Digest). The rendered page text is captured browser-side, so blocked-to-servers sites like Reddit and LinkedIn work.
+
+## Server Dependencies (M1)
+
+- `pip3 install trafilatura youtube-transcript-api --break-system-packages`
+- `ollama pull nomic-embed-text` (optional, enables semantic ask; falls back to keyword search without it)
+
 ## Known Limitations
 
-- LM Studio must be running for summarization to work.
+- Ollama (or the Groq fallback) must be reachable for summarization to work.
 - Mac IP may change on different networks. Update the iPhone shortcut if it stops working.
-- Reddit integration is pending API approval.
-- LinkedIn saved posts harvesting is planned but not yet built.
+- YouTube videos without transcripts fall back to the fetch failure guard rather than guessing from the title.
+- LinkedIn saved posts harvesting is planned but not yet built (the Chrome extension covers individual LinkedIn pages).

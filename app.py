@@ -28,7 +28,7 @@ except ImportError:
 OLLAMA_MODEL = "qwen2.5:3b"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_API_KEY = "YOUR_GROQ_KEY_HERE"
-GROQ_MODEL = "llama3-8b-8192"
+GROQ_MODEL = "llama-3.1-8b-instant"  # llama3-8b-8192 decommissioned by Groq (verified 2026-07-19)
 
 AUTH_TOKEN = "YOUR_TOKEN_HERE"
 
@@ -128,7 +128,8 @@ def _try_groq(prompt):
         data=body,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {GROQ_API_KEY}"
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "User-Agent": "content-digest/0.4",  # Groq 403s the default Python-urllib UA
         }
     )
     with urllib.request.urlopen(req, timeout=30) as resp:

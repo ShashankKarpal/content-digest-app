@@ -49,6 +49,8 @@ def filter_last_24h(items):
     cutoff = datetime.now(DUBAI_OFFSET) - timedelta(hours=24)
     recent = []
     for item in items:
+        if item.get("state") == "archive":
+            continue
         saved_at_str = item.get("saved_at")
         if not saved_at_str:
             continue
@@ -161,11 +163,22 @@ def format_email_body(grouped, send_date):
                     ap_items += f'''<li style="color:#D1D5DB;font-size:13px;margin-bottom:4px;font-family:Arial,sans-serif;">{html_mod.escape(ap)}</li>'''
                 ap_html = f'''<div style="margin-top:12px;"><div style="color:{color};font-size:12px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">Action Pointers</div><ul style="margin:0;padding-left:20px;">{ap_items}</ul></div>'''
 
+            # Item state pill (act / revisit / archive from the review loop)
+            state = item.get("state", "")
+            STATE_STYLES = {
+                "act": ("#c83232", "ACT ON THIS"),
+                "revisit": ("#3B82F6", "REVISIT LATER"),
+            }
+            state_pill = ""
+            if state in STATE_STYLES:
+                s_color, s_label = STATE_STYLES[state]
+                state_pill = f'''<span style="display:inline-block;background:{s_color};color:#fff;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:bold;margin-right:8px;">{s_label}</span>'''
+
             cards_html += f'''
 <div style="background:#1E293B;border-left:3px solid {color};border-radius:8px;padding:20px;margin:12px 0;font-family:Arial,sans-serif;">
   <div style="font-size:16px;font-weight:bold;color:#F8FAFC;margin-bottom:4px;">{title}</div>
   <div style="font-size:12px;color:#9CA3AF;margin-bottom:12px;">
-    <span style="display:inline-block;background:{color};color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;margin-right:8px;">{html_mod.escape(category)}</span>
+    {state_pill}<span style="display:inline-block;background:{color};color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;margin-right:8px;">{html_mod.escape(category)}</span>
     {meta_str}
   </div>
   <div style="font-size:13px;color:#CBD5E1;line-height:1.6;margin-bottom:12px;">{summary}</div>
