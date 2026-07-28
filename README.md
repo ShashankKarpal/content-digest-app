@@ -13,11 +13,11 @@
 <p align="center"><b>Saves anything you find, summarizes it with a local LLM, and turns it into a knowledge base you can question.</b></p>
 
 <p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-FF6B35?style=flat-square">
-  <img alt="Status" src="https://img.shields.io/badge/status-v0.4-FF6B35?style=flat-square">
-  <img alt="Local first" src="https://img.shields.io/badge/local-first-FF6B35?style=flat-square">
-  <img alt="Stack" src="https://img.shields.io/badge/built%20with-Python-1B2233?style=flat-square">
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-1B2233?style=flat-square"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-BD4753?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/status-v0.4-BD4753?style=flat-square">
+  <img alt="Local first" src="https://img.shields.io/badge/local-first-BD4753?style=flat-square">
+  <img alt="Stack" src="https://img.shields.io/badge/built%20with-Python-1C1B1D?style=flat-square">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-1C1B1D?style=flat-square"></a>
 </p>
 
 ## What it does
