@@ -1,4 +1,4 @@
-const DEFAULTS = { server: "http://YOUR_MAC_IP:7778", token: "" };
+const DEFAULTS = { server: "http://localhost:7778", token: "" };
 
 chrome.storage.sync.get(DEFAULTS, (s) => {
   document.getElementById("server").value = s.server;

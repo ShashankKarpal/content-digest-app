@@ -39,3 +39,8 @@ id_ecdsa
 .aws/
 service-account*.json
 *.sqlite3
+
+# tracked example config is exempt from the secrets rule
+!secrets.example.json
+# internal working notes stay local
+CLAUDE.md
