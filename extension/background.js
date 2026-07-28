@@ -4,7 +4,7 @@
 // blocked this way: Reddit, LinkedIn, paywalled-but-logged-in pages all work.
 
 const DEFAULTS = {
-  server: "http://100.112.78.47:7778",
+  server: "http://YOUR_MAC_IP:7778",
   token: "",
 };
 

@@ -1,4 +1,4 @@
-secrets.json
+secrets.*
 inbox.json
 
 # --- hardened: runtime, config, secrets, dev artifacts ---
@@ -25,3 +25,17 @@ local_settings.py
 *.db
 *.sqlite
 credentials.*
+
+# --- hardening baseline completion (audit 2026-07-28) ---
+/tokens.json
+*.token
+*.p12
+*.pfx
+*.keystore
+*.jks
+id_rsa
+id_ed25519
+id_ecdsa
+.aws/
+service-account*.json
+*.sqlite3
