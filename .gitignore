@@ -44,3 +44,7 @@ service-account*.json
 !secrets.example.json
 # internal working notes stay local
 CLAUDE.md
+
+# --- secrets hygiene completion (audit 2026-07-30) ---
+.env.*
+!.env.example
