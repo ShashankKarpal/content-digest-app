@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Content Digest Server -- headless, always-on URL processor."""
 
+import hmac
 import json
 import math
 import re
@@ -38,6 +39,9 @@ GROQ_API_KEY = _SECRETS.get("groq_api_key", "")
 GROQ_MODEL = "llama-3.1-8b-instant"  # llama3-8b-8192 decommissioned by Groq (verified 2026-07-19)
 
 AUTH_TOKEN = _SECRETS.get("auth_token", "")
+if not AUTH_TOKEN:
+    print("[server] WARNING: auth_token is missing or empty in secrets.json; "
+          "ingest endpoints will reject all requests until it is set.")
 
 is_processing = False
 data_lock = threading.Lock()
@@ -954,7 +958,7 @@ class Handler(BaseHTTPRequestHandler):
         # Auth gate runs AFTER capture, so a rejected link is still recorded.
         if is_ingest:
             auth = self.headers.get("Authorization", "")
-            if auth != f"Bearer {AUTH_TOKEN}":
+            if not AUTH_TOKEN or not hmac.compare_digest(auth, f"Bearer {AUTH_TOKEN}"):
                 self.send_response(401)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
