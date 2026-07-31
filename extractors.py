@@ -21,8 +21,19 @@ import urllib.parse
 import urllib.request
 
 USER_AGENT = "macos:content-digest:v0.4 (personal knowledge tool)"
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36")
 MAX_CONTENT = 3000
 ARCTIC_BASE = "https://arctic-shift.photon-reddit.com/api"
+
+# Short-link hosts that must be resolved to their destination BEFORE dedupe,
+# storage, and extraction. lnkd.in is the big one: LinkedIn serves the target
+# post at HTTP 200 after redirects, but the visible DOM is an authwall, so the
+# short link must never be the stored identity.
+_SHORTENER_HOSTS = {
+    "lnkd.in", "bit.ly", "t.co", "tinyurl.com", "buff.ly", "ow.ly",
+    "goo.gl", "rebrand.ly", "cutt.ly", "t.ly", "shorturl.at", "rb.gy",
+}
 
 
 def _get(url, timeout=20, headers=None):
@@ -55,6 +66,22 @@ _DOMAIN_TRACKING = {
 _RESOLVE_CACHE = {}
 
 
+def _resolve_short_link(url):
+    """Follow HTTP redirects on a known shortener and return the final URL.
+    Cached. Returns the input URL unchanged on any failure."""
+    if url in _RESOLVE_CACHE:
+        return _RESOLVE_CACHE[url]
+    final = url
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            final = r.geturl() or url
+    except Exception:
+        pass
+    _RESOLVE_CACHE[url] = final
+    return final
+
+
 def normalize_url(url):
     """Canonical URL identity for dedup and storage.
 
@@ -67,6 +94,14 @@ def normalize_url(url):
         p = urllib.parse.urlsplit(url.strip())
         host = p.netloc.lower()
         bare_host = host[4:] if host.startswith("www.") else host
+
+        # Short links: resolve to the destination and normalize THAT instead,
+        # so a lnkd.in link and its linkedin.com target dedupe to one item.
+        if bare_host in _SHORTENER_HOSTS:
+            resolved = _resolve_short_link(url.strip())
+            if resolved and resolved != url.strip():
+                return normalize_url(resolved)
+
         domain_strip = set()
         for dom, params in _DOMAIN_TRACKING.items():
             if bare_host == dom or bare_host.endswith("." + dom):
@@ -348,6 +383,78 @@ def fetch_x_content(url):
 
 
 # ---------------------------------------------------------------------------
+# LinkedIn: public post pages carry the full post in JSON-LD + og meta tags.
+# The visible DOM is an authwall ("Agree & Join LinkedIn"), which is why the
+# generic trafilatura path must NEVER be used for linkedin.com / lnkd.in.
+# ---------------------------------------------------------------------------
+
+_AUTHWALL_MARKERS = (
+    "agree & join linkedin", "authwall", "join now to see",
+    "manage your professional identity", "sign up | linkedin",
+    "500 million+ members",
+)
+
+
+def fetch_linkedin_content(url):
+    url = _resolve_short_link(url) if urllib.parse.urlsplit(url).netloc.lower().endswith("lnkd.in") else url
+    try:
+        page, final = _get(url, timeout=20, headers={"User-Agent": BROWSER_UA})
+    except Exception as e:
+        print(f"[linkedin] fetch failed ({type(e).__name__}: {e})")
+        return None
+    # Landed on the signup/authwall page instead of the post: fail cleanly.
+    if any(k in (final or "") for k in ("/signup", "/authwall", "session_redirect")):
+        print(f"[linkedin] redirected to authwall: {final[:60]}")
+        return None
+
+    title, body, author, comments = "", "", "", []
+
+    # Primary: JSON-LD SocialMediaPosting / Article
+    for m in re.finditer(r'<script type="application/ld\+json">(.*?)</script>', page, re.S):
+        try:
+            data = json.loads(m.group(1))
+        except Exception:
+            continue
+        nodes = data if isinstance(data, list) else [data]
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if node.get("@type") in ("SocialMediaPosting", "Article", "NewsArticle", "BlogPosting"):
+                title = node.get("headline") or title
+                body = node.get("articleBody") or node.get("text") or body
+                a = node.get("author")
+                if isinstance(a, dict):
+                    author = a.get("name") or author
+                for c in (node.get("comment") or [])[:5]:
+                    if isinstance(c, dict) and c.get("text"):
+                        comments.append(c["text"][:300])
+
+    # Fallback: og meta tags (og:description holds the post text on public posts)
+    if not body:
+        m = re.search(r'property="og:description"\s+content="([^"]*)"', page)
+        if m:
+            body = html_mod.unescape(m.group(1))
+        m = re.search(r'property="og:title"\s+content="([^"]*)"', page)
+        if m and not title:
+            title = html_mod.unescape(m.group(1))
+
+    body = (body or "").strip()
+    low = body.lower()
+    # No real content, or content IS the authwall: fail cleanly. The failure
+    # guard notifies, and the Chrome extension (logged in) is the escape hatch.
+    if len(body) < 80 or any(k in low for k in _AUTHWALL_MARKERS):
+        print(f"[linkedin] no public content (authwall?): {final[:60]}")
+        return None
+
+    parts = [f"LinkedIn post{' by ' + author if author else ''}: {html_mod.unescape(title)}", "", html_mod.unescape(body)]
+    if comments:
+        parts += ["", "Top comments:"] + [html_mod.unescape(c) for c in comments]
+    text = "\n".join(parts)
+    print(f"[linkedin] extracted ok: {final[:60]}")
+    return text[:MAX_CONTENT]
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -368,4 +475,8 @@ def get_extractor(url):
         return fetch_youtube_content, False
     if bare in ("x.com", "twitter.com", "mobile.twitter.com"):
         return fetch_x_content, False
+    # Exclusive: the generic path on LinkedIn extracts the authwall and turns
+    # it into a junk item ("Agree & Join LinkedIn"). Fail clean instead.
+    if bare == "linkedin.com" or bare.endswith(".linkedin.com") or bare == "lnkd.in":
+        return fetch_linkedin_content, True
     return None, False

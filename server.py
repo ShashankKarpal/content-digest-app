@@ -29,6 +29,129 @@ VALID_STATES = {"act", "revisit", "archive", ""}
 RETRY_INTERVAL_HOURS = 6
 MAX_AUTO_RETRIES = 3
 
+# ---------------------------------------------------------------------------
+# Content quality gates. Three layers, because each one has caught real junk:
+#   1. _blocked_url_reason: placeholder domains, localhost, private IPs
+#      (the KB once saved its own /view page and example.com).
+#   2. _junk_content_reason: interstitial / authwall / proxy-error text that
+#      arrives with HTTP 200 and a non-empty body (lnkd.in redirect pages,
+#      r.jina.ai "request timed out" bodies).
+#   3. _junk_analysis_reason: last line of defense on the MODEL OUTPUT, for
+#      junk phrasings that slip past 1 and 2.
+# A page that fails any layer becomes a recorded failure (visible, retryable),
+# never a saved item.
+# ---------------------------------------------------------------------------
+
+_BLOCKED_HOSTS = {"example.com", "example.org", "example.net", "localhost", "test.com"}
+
+_PRIVATE_IP_RE = re.compile(
+    r"^(127\.|10\.|192\.168\.|0\.0\.0\.0|169\.254\."
+    r"|172\.(1[6-9]|2\d|3[01])\."          # 172.16/12
+    r"|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)"  # 100.64/10 CGNAT incl. Tailscale
+)
+
+_JUNK_CONTENT_MARKERS = (
+    "checking your browser before accessing",
+    "check your browser before accessing",
+    "you're being redirected",
+    "you are being redirected",
+    "if you are not redirected",
+    "if you're not redirected",
+    "click here if you are not automatically redirected",
+    "redirecting you to",
+    "enable javascript and cookies",
+    "please enable javascript",
+    "agree & join linkedin",
+    "sign in to view",
+    "join now to see",
+    "verify you are human",
+    "complete the security check",
+    "attention required! | cloudflare",
+    "just a moment...",
+    "access to this page has been denied",
+    "request timed out",
+    "err_timed_out",
+    "warning: target url returned error",
+    "this domain is for use in illustrative examples",
+    "this domain is established to be used for illustrative examples",
+)
+
+# Substring markers: junk wherever they appear in a title.
+_JUNK_TITLE_MARKERS = (
+    "untitled", "short title", "no title", "access check", "access warning",
+    "agree & join", "browser verification", "browser check", "security check",
+    "page not found", "just a moment", "lnkd.in",
+)
+# Exact-title markers: junk only when they ARE the whole title.
+_JUNK_TITLE_EXACT = ("learn more", "redirect", "error", "error page", "sign in", "home")
+
+_JUNK_SUMMARY_MARKERS = (
+    "does not contain any substantive content",
+    "appears to be an experimental placeholder",
+    "check your browser",
+    "being redirected",
+    "redirection page",
+    "before accessing",
+    "agreeing to the platform's terms",
+    "this article is empty",
+    "no content could be extracted",
+)
+
+
+def _blocked_url_reason(url):
+    """Reject URLs that can never be real content."""
+    try:
+        import urllib.parse as _up
+        host = _up.urlsplit(url).hostname or ""
+    except Exception:
+        return None
+    host = host.lower()
+    bare = host[4:] if host.startswith("www.") else host
+    if bare in _BLOCKED_HOSTS:
+        return f"Placeholder/test domain: {bare}"
+    if _PRIVATE_IP_RE.match(bare) or bare.endswith(".local"):
+        return f"Local/private address: {bare}"
+    return None
+
+
+def _junk_content_reason(text):
+    """Detect interstitial, authwall, and proxy-error bodies that arrive as
+    HTTP 200. Real articles mentioning these phrases are long; junk pages are
+    short, so markers only reject when the body is small."""
+    if not text:
+        return "Empty content"
+    t = text.strip()
+    if len(t) < 200:
+        return f"Content too short ({len(t)} chars)"
+    words = t.split()
+    if len(words) < 40:
+        return f"Content too short ({len(words)} words)"
+    if len(set(w.lower() for w in words)) < 20:
+        return "Content is repetitive boilerplate"
+    low = t.lower()
+    if len(t) < 2500:
+        for marker in _JUNK_CONTENT_MARKERS:
+            if marker in low:
+                return f"Interstitial/error page detected: '{marker}'"
+    return None
+
+
+def _junk_analysis_reason(analysis):
+    """Final gate on the model output before anything is saved."""
+    if analysis.get("unusable"):
+        return f"Model flagged content unusable: {str(analysis.get('reason', ''))[:120]}"
+    title = str(analysis.get("title", "")).strip().lower()
+    if title in _JUNK_TITLE_EXACT:
+        return f"Junk title detected: '{title[:60]}'"
+    for marker in _JUNK_TITLE_MARKERS:
+        if marker in title and len(title) < 60:
+            return f"Junk title detected: '{title[:60]}'"
+    summary = str(analysis.get("summary", "")).strip().lower()
+    for marker in _JUNK_SUMMARY_MARKERS:
+        if marker in summary:
+            return f"Junk summary detected: '{marker}'"
+    return None
+
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_EMBED_MODEL = "nomic-embed-text"
@@ -89,15 +212,17 @@ def fetch_url_content(url):
         print('[fetch] direct extract empty; trying reader proxy')
     except Exception as e:
         print(f'[fetch error] direct: {e}; trying reader proxy')
-    # Fallback: reader proxy for sites that block direct fetch (e.g. LinkedIn)
+    # Fallback: reader proxy for sites that block direct fetch.
+    # NOTE: the proxy returns error bodies ("request timed out") with HTTP 200,
+    # so its output must pass the junk gate, not just a length check.
     try:
         req = urllib.request.Request('https://r.jina.ai/' + url, headers=ua)
         with urllib.request.urlopen(req, timeout=30) as r:
             md = r.read().decode('utf-8', errors='ignore')
-        if md and len(md.strip()) > 100:
+        if md and len(md.strip()) > 300 and not _junk_content_reason(md.strip()[:3000]):
             print('[fetch] reader proxy succeeded')
             return md[:3000]
-        print('[fetch] reader proxy returned too little')
+        print('[fetch] reader proxy returned too little or junk')
     except Exception as e:
         print(f'[fetch error] reader proxy: {e}')
     return None
@@ -109,7 +234,10 @@ def _build_prompt(url, content):
 URL: {url}
 Content: {content[:2000]}
 
-Return exactly this JSON:
+FIRST, decide if this is real content. If the text is a login wall, a "checking your browser" or redirect notice, a CAPTCHA page, an error message, a cookie banner, or an empty placeholder rather than an actual article or post, return exactly:
+{{"unusable": true, "reason": "one short sentence why"}}
+
+Otherwise return exactly this JSON:
 {{
   "title": "short descriptive title max 10 words",
   "summary": "detailed summary of 150-200 words explaining what this is about, key points, and why it matters",
@@ -432,6 +560,11 @@ def process_url(url, content=None):
     try:
         is_processing = True
         url = normalize_url(url)
+        blocked = _blocked_url_reason(url)
+        if blocked:
+            _record_failure(url, "quality", blocked)
+            print(f"[reject] {blocked}: {url[:60]}")
+            return {"status": "failed", "error_type": "quality", "reason": blocked}
         data = _load_data()
         if url in [i["url"] for i in data["items"]]:
             print(f"[skip] Already saved: {url[:60]}")
@@ -440,6 +573,10 @@ def process_url(url, content=None):
         if content:
             content = str(content).strip()[:3000]
             print(f"[fetch] Using browser-captured content ({len(content)} chars)")
+            junk = _junk_content_reason(content)
+            if junk:
+                print(f"[fetch] Browser content rejected ({junk}); refetching server-side")
+                content = None
         if not content:
             try:
                 content = fetch_url_content(url)
@@ -451,11 +588,31 @@ def process_url(url, content=None):
                 _record_failure(url, "fetch", f"{type(e).__name__}: {str(e)[:200]}")
                 print(f"[error] Fetch failed: {e}")
                 return {"status": "failed", "error_type": "fetch", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+        # Junk gate: interstitials, authwalls, and proxy-error bodies must
+        # become visible failures, never summarized items.
+        junk = _junk_content_reason(content)
+        if junk:
+            _record_failure(url, "quality", junk)
+            print(f"[reject] {junk}: {url[:60]}")
+            return {"status": "failed", "error_type": "quality", "reason": junk}
         try:
-            analysis = validate_analysis(analyze_with_ai(url, content), url)
+            raw_analysis = analyze_with_ai(url, content)
         except Exception as e:
             _record_failure(url, "ai", f"{type(e).__name__}: {str(e)[:200]}")
             print(f"[error] AI failed: {e}")
+            return {"status": "failed", "error_type": "ai", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+        # Model-output gate: the model may flag unusable content, and junk
+        # titles/summaries that slipped through are caught here.
+        junk = _junk_analysis_reason(raw_analysis if isinstance(raw_analysis, dict) else {})
+        if junk:
+            _record_failure(url, "quality", junk)
+            print(f"[reject] {junk}: {url[:60]}")
+            return {"status": "failed", "error_type": "quality", "reason": junk}
+        try:
+            analysis = validate_analysis(raw_analysis, url)
+        except Exception as e:
+            _record_failure(url, "ai", f"{type(e).__name__}: {str(e)[:200]}")
+            print(f"[error] AI validation failed: {e}")
             return {"status": "failed", "error_type": "ai", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
         try:
             item = {
@@ -610,6 +767,7 @@ def build_html(items, failures=None):
   .badge-fetch {{ background: #c83232; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
   .badge-ai {{ background: #c87a32; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
   .badge-storage {{ background: #6b32c8; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
+  .badge-quality {{ background: #b8860b; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
   .state-row {{ display: flex; gap: 6px; margin-top: 12px; }}
   .state-row button {{ background: #1e1e1e; border: 1px solid #333; color: #888; padding: 4px 12px; border-radius: 14px; cursor: pointer; font-size: 11px; font-family: 'Montserrat', sans-serif; }}
   .state-row button.st-act.on {{ background: #c83232; color: #fff; border-color: #c83232; font-weight: 600; }}
