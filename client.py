@@ -24,7 +24,14 @@ except Exception:
 
 class ContentDigestClient(rumps.App):
     def __init__(self):
-        super().__init__("📌", quit_button=None)
+        # Brand symbol as a macOS template icon (auto light/dark). Falls back
+        # to the classic pin emoji if the icon file is missing.
+        _icon = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "design", "logo", "menubar-template.png")
+        if os.path.exists(_icon):
+            super().__init__("Content Digest", icon=_icon, template=True, quit_button=None)
+        else:
+            super().__init__("📌", quit_button=None)
         self.menu = [
             rumps.MenuItem("Add URL...", callback=self.add_url),
             rumps.MenuItem("View Knowledge Base", callback=self.view_kb),

@@ -24,6 +24,13 @@ HTML_FILE = BASE_DIR / "knowledge.html"
 INBOX_FILE = BASE_DIR / "inbox.json"
 EMB_FILE = BASE_DIR / "embeddings.json"
 
+# Brand lockup for the /view header; falls back to plain text if missing.
+LOGO_SVG = ""
+try:
+    LOGO_SVG = (BASE_DIR / "design" / "logo" / "content-digest-lockup-horizontal-dark.svg").read_text()
+except Exception:
+    pass
+
 VALID_CATEGORIES = {"Work", "Learning", "Entertainment", "News", "Ideas"}
 VALID_STATES = {"act", "revisit", "archive", ""}
 RETRY_INTERVAL_HOURS = 6
@@ -725,6 +732,8 @@ def build_html(items, failures=None):
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{ font-family: 'Montserrat', -apple-system, system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #1a1a2e; color: #e0e0e0; }}
   h1 {{ color: #ff6b35; margin-bottom: 4px; font-size: 24px; }}
+  h1.brand {{ display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }}
+  h1.brand svg {{ height: 34px; width: auto; display: block; }}
   .subtitle {{ color: #888; font-size: 14px; margin-bottom: 20px; }}
   .filters {{ display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }}
   .filters button {{ background: #1e1e1e; border: 1px solid #333; color: #aaa; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 13px; }}
@@ -790,7 +799,7 @@ def build_html(items, failures=None):
 </style>
 </head>
 <body>
-<h1>Content Digest <span id="count"></span></h1>
+<h1 class="brand">{LOGO_SVG if LOGO_SVG else 'Content Digest'} <span id="count"></span></h1>
 <div class="ask-row">
   <input type="text" id="ask-input" placeholder="Ask your knowledge base... (e.g. what did I save about Kubernetes?)">
   <button id="ask-btn">Ask</button>
