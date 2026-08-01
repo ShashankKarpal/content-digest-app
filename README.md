@@ -147,6 +147,12 @@ screenshots/      UI screenshots
 | v0.4 | Reddit, extractor registry, ask-your-KB, Chrome extension | Shipped |
 | v1 | Personalization: surface content based on what you act on | Planned |
 
+## Deployment
+
+The always-on M1 is the runtime host. It runs a git clone of this repo at `~/content-digest-app` plus an auto-deploy agent (`com.shashank.autodeploy`, every 5 minutes): fetch origin, hard-reset to the upstream branch on change, `py_compile` sanity check, then restart the server LaunchAgent. A failed compile logs to `~/autodeploy.log` and leaves the running service untouched.
+
+To ship: commit and push to GitHub from the dev machine. Never edit code on the M1; the next deploy cycle overwrites it by design. Runtime data (`knowledge.json`, `secrets.json`, and friends) is gitignored and survives deploys.
+
 ## Known limitations
 
 - A local model, or the Groq fallback, must be reachable for summarization.
