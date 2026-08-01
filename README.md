@@ -25,7 +25,7 @@
 - Categorizes and tags every item automatically.
 - Answers plain-language questions about everything you have saved.
 - Emails a morning brief of what is worth returning to.
-- Keeps every byte on your own machine.
+- Keeps storage and summarization on your own machine, local-first with an optional cloud fallback.
 
 ## Features
 
@@ -107,6 +107,14 @@ Set the server address in `local_settings.py` (also gitignored). Never commit a 
 
 Real credentials live only on local machines. Nothing in this repository holds a working secret.
 
+## Network exposure
+
+Read this before running the server anywhere but home.
+
+The server binds `0.0.0.0:7778`, so every device on your network can reach it, not just the Mac it runs on. Write endpoints such as `/add` require the bearer token, but the knowledge base pages and other read endpoints are served without authentication: anyone on the same network can read everything you have saved.
+
+Treat it as **safe on a trusted home Wi-Fi only**. Do not port-forward it, do not run it on public, office, or shared networks, and use a tailnet (Tailscale) or an authenticating reverse proxy if you need remote access. Closing this gap properly is tracked in [issue #2](https://github.com/ShashankKarpal/content-digest-app/issues/2).
+
 ## Usage
 
 **iPhone Shortcut.** Create a shortcut with a Get Contents of URL action:
@@ -179,10 +187,11 @@ To ship: commit and push to GitHub from the dev machine. Never edit code on the 
 - The Mac address changes across networks; update the iPhone shortcut if capture stops working.
 - YouTube videos without transcripts hit the fetch failure guard rather than guessing from the title.
 - LinkedIn saved-post harvesting is not built; the Chrome extension covers individual pages.
+- Read endpoints are unauthenticated; see Network exposure above.
 
 ## Privacy
 
-Everything is local: saved items, summaries, embeddings, and the knowledge base live in plain files on your own machine. The only outbound traffic is fetching the pages you ask for, the optional Groq fallback when the local model is down, and the brief email you configure.
+Local-first, not local-only. Saved items, summaries, embeddings, and the knowledge base live in plain files on your own machine, and a local model does the summarizing whenever it is reachable. Three things can leave the machine: fetching the pages you save (blocked sites route via the reader proxy), the optional Groq fallback when the local model is down (the extracted text is sent to Groq), and the morning brief email over SMTP. Leave the Groq key and SMTP settings empty in `secrets.json` to keep everything strictly local.
 
 ## License
 
