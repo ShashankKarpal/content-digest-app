@@ -727,6 +727,14 @@ def build_html(items, failures=None):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Content Digest</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Content Digest">
+<meta name="theme-color" content="#1a1a2e">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -1095,6 +1103,40 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps(failures).encode())
+            return
+        if self.path == "/manifest.webmanifest":
+            manifest = {
+                "name": "Content Digest",
+                "short_name": "Digest",
+                "start_url": "/view",
+                "scope": "/",
+                "display": "standalone",
+                "background_color": "#1a1a2e",
+                "theme_color": "#1a1a2e",
+                "icons": [
+                    {"src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                    {"src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                    {"src": "/assets/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+                ],
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/manifest+json")
+            self.end_headers()
+            self.wfile.write(json.dumps(manifest).encode())
+            return
+        if self.path.startswith("/assets/"):
+            asset_dir = (BASE_DIR / "design" / "web").resolve()
+            target = (asset_dir / self.path[len("/assets/"):]).resolve()
+            ctypes = {".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
+            if target.parent == asset_dir and target.is_file() and target.suffix in ctypes:
+                self.send_response(200)
+                self.send_header("Content-Type", ctypes[target.suffix])
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(target.read_bytes())
+                return
+            self.send_response(404)
+            self.end_headers()
             return
         self.send_response(404)
         self.end_headers()

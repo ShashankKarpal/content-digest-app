@@ -133,9 +133,29 @@ screenshots/      UI screenshots
 
 ## Screenshots
 
-| Menu bar | Knowledge base |
+**Knowledge base on Mac.** Every saved link lands here summarized, with action pointers, auto-tags, and Act / Later / Archive states.
+
+![Knowledge base on Mac](screenshots/knowledge-base-mac.png)
+
+**Knowledge base on iPhone.** The same view from Safari on iOS; add it to the home screen and it opens like a native app.
+
+![Knowledge base on iPhone](screenshots/knowledge-base-iphone.png)
+
+**Ask your KB.** Natural-language questions answered from saved items only, with cited sources. On Mac and iPhone.
+
+![Ask your KB on Mac](screenshots/ask-kb-mac.png)
+
+![Ask your KB on iPhone](screenshots/ask-kb-iphone.jpg)
+
+**Category filters.** One tap isolates a category; here, everything saved as an Idea.
+
+![Ideas filter on Mac](screenshots/ideas-filter-mac.png)
+
+**Capture from the menu bar.** The brand icon lives in the Mac menu bar; Add URL takes a link, the pipeline does the rest.
+
+| Menu bar | Add URL |
 | --- | --- |
-| ![Menu bar](screenshots/menubar.png) | ![Knowledge base](screenshots/knowledge-base.png) |
+| ![Menu bar menu](screenshots/menubar-menu-mac.png) | ![Add URL dialog](screenshots/add-url-mac.png) |
 
 ## Roadmap
 
