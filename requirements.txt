@@ -1,0 +1,3 @@
+rumps>=0.4
+trafilatura>=1.8
+youtube-transcript-api>=0.6

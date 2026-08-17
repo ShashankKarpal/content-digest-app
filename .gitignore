@@ -17,7 +17,6 @@ config.json.save
 failures.json
 embeddings.json
 knowledge.html
-docs/
 knowledge.json
 local_settings.py
 
@@ -44,6 +43,10 @@ service-account*.json
 !secrets.example.json
 # internal working notes stay local
 CLAUDE.md
+# docs/ is public; the live session handoff and runtime ledgers are not
+docs/session-handoff.md
+resurface.json
+brief_last.html
 
 # --- secrets hygiene completion (audit 2026-07-30) ---
 .env.*

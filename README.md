@@ -24,7 +24,8 @@
 - Summarizes each item in 150 to 200 words with action pointers, using a local model.
 - Categorizes and tags every item automatically.
 - Answers plain-language questions about everything you have saved.
-- Emails a morning brief of what is worth returning to.
+- Emails a morning brief of new saves plus three backlog items with one-tap triage links.
+- Auto-archives what you keep ignoring, so the backlog cannot become a guilt pile.
 - Keeps storage and summarization on your own machine, local-first with an optional cloud fallback.
 
 ## Features
@@ -57,6 +58,14 @@
 - **Persistent delete.** Removing an item removes it from storage, not just the view.
 - **LLM output validation.** Category whitelist, relevance bounds, and shape checks before anything is saved.
 
+### Close the loop
+
+- **Resurfacing brief.** Every morning email pulls up to 3 items back out of the backlog (age x relevance, act-marked first, category-diverse, 5-day cooldown per item).
+- **One-tap triage from the email.** Each resurfaced item carries HMAC-signed Act / Later / Archive links (72-hour expiry); one tap sets the state, no app open needed.
+- **Triage deck.** A Review button on the knowledge base opens one card at a time: Act, Later, Archive, or Skip, with keyboard shortcuts (a / l / x / space) and a completion state. Max 10 cards per run.
+- **Auto-archive decay.** Untouched items age out (News after 7 days, everything else after 21), and an item resurfaced 3 times with no response archives regardless. Reversible, and the brief reports the count.
+- **One fatigue ledger.** The brief and the deck share a scorer and a cooldown store, so the same item is never pushed at you twice in a day.
+
 ### Daily brief
 
 - **Morning email brief.** HTML digest sent on a LaunchAgent schedule.
@@ -65,28 +74,30 @@
 
 ### Model routing
 
-- **Local first.** Ollama or LM Studio on the local machine does the summarizing.
-- **Cloud fallback.** Groq is used only when the local model is unreachable.
+- **Local first.** Ollama on the local machine does the summarizing.
+- **Cloud fallback.** Groq is used only when the local model is unreachable, and only if you set a key.
 
 ## Stack
 
-- App: Python, rumps menu bar app
+- App: Python, rumps menu bar client
 - Extraction: trafilatura, youtube-transcript-api
-- Local inference: LM Studio or Ollama
-- Fallback inference: Groq
+- Local inference: Ollama
+- Fallback inference: Groq (optional, off unless a key is set)
 - Storage: plain JSON, plain HTML knowledge base
 - Capture surfaces: iOS Shortcuts, Chrome extension (Manifest V3)
 
 ## Install
 
-Requires: Python 3.11 or later, LM Studio or Ollama running locally, Homebrew.
+Requires: Python 3.11 or later, Ollama running locally, Homebrew.
 
 ```bash
 git clone https://github.com/ShashankKarpal/content-digest-app.git
 cd content-digest-app
-pip3 install rumps trafilatura youtube-transcript-api --break-system-packages
+pip3 install -r requirements.txt --break-system-packages
+ollama pull qwen2.5:3b              # the summarizer
 ollama pull nomic-embed-text        # optional, enables semantic ask
-python3 app.py
+python3 server.py                   # the server (port 7778)
+python3 client.py                   # optional: the menu bar client
 ```
 
 ## Configuration
@@ -129,13 +140,13 @@ Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote acc
 ## Project structure
 
 ```
-app.py            menu bar app
-server.py         HTTP server, extraction, summarization, knowledge base
-client.py         lightweight menu bar client
+server.py         HTTP server: extraction, summarization, knowledge base, triage, decay
+client.py         menu bar client (sends URLs to the server)
 extractors.py     per-source extractor registry
-daily_brief.py    morning email brief
+daily_brief.py    morning email brief with backlog resurfacing
 extension/        Chrome extension
 design/           brand assets, tokens, BRAND.md
+docs/             product intent, roadmap, decision log, worklog, audits
 screenshots/      UI screenshots
 ```
 
@@ -173,7 +184,8 @@ screenshots/      UI screenshots
 | v0.2 | Return loop: digest email and item states | Shipped |
 | v0.3 | Search, timezone-aware timestamps, reader-proxy fallback | Shipped |
 | v0.4 | Reddit, extractor registry, ask-your-KB, Chrome extension | Shipped |
-| v1 | Personalization: surface content based on what you act on | Planned |
+| v0.5 | Close the loop: auth everywhere, resurfacing brief, one-tap triage, triage deck, auto-archive decay | Shipped |
+| v1 | Personalization: surface content based on what you act on | Data-gated: needs real act/archive signal first |
 
 ## Deployment
 

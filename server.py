@@ -14,7 +14,9 @@ import fcntl
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-BASE_DIR = Path.home() / "content-digest-app"
+# Anchor to this file's directory, like daily_brief.py, so the server and the
+# brief always agree on where runtime data lives regardless of machine.
+BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 from extractors import get_extractor, normalize_url
 from daily_brief import pick_resurfaced  # one scorer for brief and deck
