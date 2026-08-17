@@ -105,6 +105,8 @@ Copy `secrets.example.json` to `secrets.json` and fill it in. `secrets.json` and
 
 Set the server address in `local_settings.py` (also gitignored). Never commit a LAN, tailnet, or VPN address.
 
+The daily brief reads SMTP settings from `config.json` (gitignored). Set `server_base` there (for example your machine's tailnet address, `http://100.x.y.z:7778`) so the brief's one-tap triage links point at the server. **Tailnet dependency:** triage links are plain HTTP to that address and are HMAC-signed with a 72-hour expiry, but the tap only works from a device that can reach the server, meaning the same tailnet (Tailscale) or home LAN. On any other network the link times out; the item stays put and resurfaces again.
+
 Real credentials live only on local machines. Nothing in this repository holds a working secret.
 
 ## Network exposure

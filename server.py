@@ -36,6 +36,15 @@ VALID_STATES = {"act", "revisit", "archive", ""}
 RETRY_INTERVAL_HOURS = 6
 MAX_AUTO_RETRIES = 3
 
+# Auto-archive decay (feature 3): untouched items age out of the active view.
+# News goes stale fastest; everything else gets three weeks. An item the brief
+# has resurfaced RESURFACE_STRIKES times with no response archives regardless
+# of age. Reversible: archived is a filter away, and the brief reports counts.
+RESURFACE_FILE = BASE_DIR / "resurface.json"
+DECAY_TTL_DAYS = {"News": 7}
+DECAY_TTL_DEFAULT_DAYS = 21
+RESURFACE_STRIKES = 3
+
 # ---------------------------------------------------------------------------
 # Content quality gates. Three layers, because each one has caught real junk:
 #   1. _blocked_url_reason: placeholder domains, localhost, private IPs
@@ -676,6 +685,53 @@ def process_url(url, content=None):
         is_processing = False
 
 
+def _sign_triage(url, state, expires):
+    """HMAC signature for one-tap triage links in the daily brief.
+    daily_brief.py carries the mirror implementation; keep them identical."""
+    msg = f"{url}|{state}|{expires}".encode()
+    return hmac.new(AUTH_TOKEN.encode(), b"triage-v1:" + msg, "sha256").hexdigest()
+
+
+def decay_sweep():
+    """Feature 3: auto-archive untouched items past their TTL, and items the
+    brief resurfaced RESURFACE_STRIKES times with no response. Runs at startup
+    and every retry cycle. Sets auto_archived_at so the brief can report it."""
+    now = datetime.now(timezone(timedelta(hours=4)))
+    try:
+        resurface = json.loads(RESURFACE_FILE.read_text()) if RESURFACE_FILE.exists() else {}
+    except Exception:
+        resurface = {}
+    archived = 0
+    with data_lock:
+        data = _load_data()
+        for item in data["items"]:
+            if item.get("state"):
+                continue
+            reason = None
+            if resurface.get(item["url"], {}).get("count", 0) >= RESURFACE_STRIKES:
+                reason = "resurfaced without response"
+            else:
+                try:
+                    saved = datetime.fromisoformat(item.get("saved_at", ""))
+                except (ValueError, TypeError):
+                    continue
+                if saved.tzinfo is None:
+                    saved = saved.replace(tzinfo=timezone(timedelta(hours=4)))
+                ttl = DECAY_TTL_DAYS.get(item.get("category"), DECAY_TTL_DEFAULT_DAYS)
+                if (now - saved).days >= ttl:
+                    reason = f"untouched past {ttl}d TTL"
+            if reason:
+                item["state"] = "archive"
+                item["auto_archived_at"] = now.isoformat()
+                archived += 1
+        if archived:
+            _save_data(data)
+            HTML_FILE.write_text(build_html(data["items"]))
+    if archived:
+        print(f"[decay] Auto-archived {archived} item(s)")
+    return archived
+
+
 def set_item_state(url, state):
     """Set act / revisit / archive on a saved item."""
     if state not in VALID_STATES:
@@ -728,6 +784,7 @@ def retry_loop():
     while True:
         time.sleep(RETRY_INTERVAL_HOURS * 3600)
         try:
+            decay_sweep()
             retryable = [
                 f["url"] for f in _load_failures()["items"]
                 if f.get("error_type") == "fetch" and f.get("retry_count", 0) < MAX_AUTO_RETRIES
@@ -1149,6 +1206,45 @@ class Handler(BaseHTTPRequestHandler):
             self._deny(403, "Forbidden source")
             return
         path, _, query = self.path.partition("?")
+        if path == "/triage":
+            # One-tap state links from the daily brief. The HMAC signature IS
+            # the credential (no cookie needed: mail clients have none), the
+            # expiry bounds replay, and the trusted-source guard above still
+            # applies, so links only work from the tailnet or home LAN.
+            import urllib.parse as _up
+            q = _up.parse_qs(query)
+            url = q.get("u", [""])[0]
+            state = q.get("s", [""])[0]
+            sig = q.get("sig", [""])[0]
+            try:
+                expires = int(q.get("e", ["0"])[0])
+            except ValueError:
+                expires = 0
+            code, msg = 200, ""
+            labels = {"act": "Act on this", "revisit": "Revisit later", "archive": "Archived"}
+            if not (AUTH_TOKEN and url and state in ("act", "revisit", "archive")):
+                code, msg = 400, "Invalid link."
+            elif time.time() > expires:
+                code, msg = 410, "This link has expired. Triage links are valid for 72 hours; use tomorrow's brief."
+            elif not hmac.compare_digest(sig.encode(), _sign_triage(url, state, expires).encode()):
+                code, msg = 403, "Invalid link signature."
+            elif not set_item_state(url, state):
+                code, msg = 404, "Item not found. It may have been deleted or merged."
+            if code == 200:
+                msg = f"Done: marked <b style='color:#ff9f1c;'>{labels[state]}</b>."
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write((
+                "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+                "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+                "<title>Content Digest</title></head>"
+                "<body style='background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,sans-serif;"
+                "padding:40px;max-width:600px;margin:0 auto;'>"
+                f"<h2 style='color:#ff6b35;'>Content Digest</h2><p>{msg}</p>"
+                "<p style='color:#666;font-size:13px;'>You can close this tab.</p>"
+                "</body></html>").encode())
+            return
         if path == "/view":
             if not self._cookie_ok():
                 import urllib.parse as _up
@@ -1336,6 +1432,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     BASE_DIR.mkdir(exist_ok=True)
     _self_heal_failures()
+    decay_sweep()
     threading.Thread(target=retry_loop, daemon=True).start()
     threading.Thread(target=backfill_embeddings, daemon=True).start()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7778
