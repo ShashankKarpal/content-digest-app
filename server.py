@@ -17,6 +17,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 BASE_DIR = Path.home() / "content-digest-app"
 sys.path.insert(0, str(BASE_DIR))
 from extractors import get_extractor, normalize_url
+from daily_brief import pick_resurfaced  # one scorer for brief and deck
 
 DATA_FILE = BASE_DIR / "knowledge.json"
 FAILURES_FILE = BASE_DIR / "failures.json"
@@ -685,6 +686,40 @@ def process_url(url, content=None):
         is_processing = False
 
 
+DECK_MAX = 10
+resurface_lock = threading.Lock()
+
+
+def _load_resurface():
+    try:
+        return json.loads(RESURFACE_FILE.read_text()) if RESURFACE_FILE.exists() else {}
+    except Exception:
+        return {}
+
+
+def get_deck(limit=DECK_MAX):
+    """Triage deck contents: same scorer and fatigue ledger as the brief, so
+    items the 07:00 brief resurfaced today are on cooldown and never reappear
+    in the same day's deck."""
+    now = datetime.now(timezone(timedelta(hours=4)))
+    return pick_resurfaced(_load_data()["items"], _load_resurface(), now, limit=limit)
+
+
+def record_deck_skip(url):
+    """A skipped deck card counts as a resurfacing with no response: it stamps
+    the cooldown (tomorrow's brief will not repeat it) and adds a strike
+    toward auto-archive."""
+    now = datetime.now(timezone(timedelta(hours=4)))
+    with resurface_lock:
+        resurface = _load_resurface()
+        r = resurface.setdefault(url, {"count": 0})
+        r["count"] = r.get("count", 0) + 1
+        r["last"] = now.isoformat()
+        tmp = RESURFACE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(resurface, indent=2))
+        tmp.rename(RESURFACE_FILE)
+
+
 def _sign_triage(url, state, expires):
     """HMAC signature for one-tap triage links in the daily brief.
     daily_brief.py carries the mirror implementation; keep them identical."""
@@ -800,9 +835,11 @@ def retry_loop():
             print(f"[retry] Sweep error: {type(e).__name__}: {e}")
 
 
-def build_html(items, failures=None):
+def build_html(items, failures=None, deck_urls=None):
     if failures is None:
         failures = _load_failures().get("items", [])
+    if deck_urls is None:
+        deck_urls = []
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -882,6 +919,21 @@ def build_html(items, failures=None):
   .ask-row input:focus {{ border-color: #ff6b35; }}
   .ask-row button {{ background: #ff6b35; border: none; color: #000; padding: 9px 18px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
   .ask-row button:disabled {{ opacity: 0.5; cursor: wait; }}
+  #review-btn {{ background: #1e1e1e; border: 1px solid #ff6b35; color: #ff6b35; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
+  #review-btn:hover {{ background: #ff6b35; color: #000; }}
+  .deck-overlay {{ display: none; position: fixed; inset: 0; background: rgba(10,10,20,0.96); z-index: 100; align-items: center; justify-content: center; padding: 16px; }}
+  .deck-card {{ background: #16213e; border: 1px solid #2a3a5e; border-radius: 16px; padding: 24px; max-width: 560px; width: 100%; max-height: 82vh; overflow-y: auto; }}
+  .deck-top {{ display: flex; justify-content: space-between; align-items: center; color: #888; font-size: 13px; margin-bottom: 14px; }}
+  .deck-close {{ background: none; border: none; color: #555; font-size: 22px; cursor: pointer; line-height: 1; }}
+  .deck-close:hover {{ color: #ff4444; }}
+  .deck-actions {{ display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; }}
+  .deck-actions button {{ flex: 1; min-width: 96px; padding: 13px 0; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; font-family: 'Montserrat', sans-serif; }}
+  .deck-act {{ background: #c83232; color: #fff; }}
+  .deck-later {{ background: #3B82F6; color: #fff; }}
+  .deck-archive {{ background: #4B5563; color: #fff; }}
+  .deck-skip {{ background: #1e1e1e; color: #888; border: 1px solid #333 !important; }}
+  .deck-key {{ color: #555; font-size: 11px; margin-top: 12px; text-align: center; }}
+  .deck-done {{ text-align: center; padding: 26px 10px; }}
   #ask-answer {{ display: none; background: #16213e; border: 1px solid #2a3a5e; border-radius: 12px; padding: 16px; margin-bottom: 18px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: pre-wrap; }}
   #ask-answer .ask-sources {{ margin-top: 10px; font-size: 12px; }}
   #ask-answer .ask-sources a {{ color: #ff9f1c; text-decoration: none; display: block; margin-top: 4px; }}
@@ -926,12 +978,15 @@ def build_html(items, failures=None):
     <button class="s-active" data-mode="all">All fields</button>
     <button data-mode="title">Title only</button>
   </div>
+  <button id="review-btn" style="display:none" onclick="openDeck()">Review</button>
 </div>
+<div class="deck-overlay" id="deck-overlay"><div class="deck-card" id="deck-card"></div></div>
 <div id="items-container"></div>
 <div id="empty-state" style="display:none">No items saved yet. Add a URL to get started.</div>
 <script>
 var DATA = {json.dumps(items)};
 var FAILURES = {json.dumps(failures)};
+var DECK = {json.dumps(deck_urls)};
 var currentFilter = "All";
 var currentSort = "newest";
 var currentSearch = "";
@@ -1120,6 +1175,92 @@ function deleteFailure(btn) {{
     body: JSON.stringify({{url: url}})
   }}).catch(e => console.warn("Failure delete sync failed:", e));
 }}
+// --- Triage deck: one card at a time over the same scorer as the brief ---
+var deckPos = 0, deckTriaged = 0, deckSkipped = 0;
+function deckCurrent() {{
+  while (deckPos < DECK.length) {{
+    var it = DATA.find(i => i.url === DECK[deckPos]);
+    if (it && it.state !== "archive") return it;
+    deckPos++;
+  }}
+  return null;
+}}
+function openDeck() {{
+  deckPos = 0; deckTriaged = 0; deckSkipped = 0;
+  if (document.activeElement) document.activeElement.blur();
+  document.getElementById("deck-overlay").style.display = "flex";
+  renderDeck();
+}}
+function closeDeck() {{
+  document.getElementById("deck-overlay").style.display = "none";
+  render();
+}}
+function renderDeck() {{
+  var card = document.getElementById("deck-card");
+  var it = deckCurrent();
+  if (!it) {{
+    card.innerHTML = `<div class="deck-done">
+      <div style="font-size:36px;color:#ff9f1c;">&#10003;</div>
+      <h3 style="margin:10px 0;color:#fff;">Deck clear</h3>
+      <p style="color:#9CA3AF;font-size:14px;">${{deckTriaged}} triaged, ${{deckSkipped}} skipped. Nothing left to review today.</p>
+      <button style="margin-top:18px;padding:11px 26px;border:none;border-radius:10px;background:#ff6b35;color:#000;font-weight:600;font-size:14px;cursor:pointer;font-family:'Montserrat',sans-serif;" onclick="closeDeck()">Done</button>
+    </div>`;
+    return;
+  }}
+  var ap = (it.action_points && it.action_points.length)
+    ? `<div style="margin-top:10px;"><strong style="color:#ff9f1c;font-size:13px;">Action Pointers</strong><ul style="margin-top:6px;padding-left:18px;color:#ccc;font-size:13px;line-height:1.8">${{it.action_points.map(a => `<li>${{escapeHtml(a)}}</li>`).join("")}}</ul></div>`
+    : "";
+  card.innerHTML = `
+    <div class="deck-top"><span>${{deckPos + 1}} of ${{DECK.length}} &nbsp;&middot;&nbsp; ${{DECK.length - deckPos - 1}} remaining</span><button class="deck-close" onclick="closeDeck()" title="Close">&times;</button></div>
+    <h3 style="font-size:17px;margin-bottom:6px;"><a href="${{it.url}}" target="_blank" style="color:#fff;text-decoration:none;">${{escapeHtml(it.title)}}</a></h3>
+    <div class="meta"><span class="cat-tag">${{it.category}}</span>${{formatDate(it.saved_at)}}</div>
+    <p class="summary">${{escapeHtml(it.summary)}}</p>
+    ${{ap}}
+    <div class="deck-actions">
+      <button class="deck-act" onclick="deckResolve('act')">Act</button>
+      <button class="deck-later" onclick="deckResolve('revisit')">Later</button>
+      <button class="deck-archive" onclick="deckResolve('archive')">Archive</button>
+      <button class="deck-skip" onclick="deckResolve('skip')">Skip</button>
+    </div>
+    <div class="deck-key">a act &nbsp;&middot;&nbsp; l later &nbsp;&middot;&nbsp; x archive &nbsp;&middot;&nbsp; space skip &nbsp;&middot;&nbsp; esc close</div>`;
+}}
+function deckResolve(action) {{
+  var it = deckCurrent();
+  if (!it) return;
+  if (action === "skip") {{
+    deckSkipped++;
+    fetch("/deck/skip", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{url: it.url}})
+    }}).catch(e => console.warn("Skip sync failed:", e));
+  }} else {{
+    it.state = action;
+    deckTriaged++;
+    fetch("/state", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{url: it.url, state: action}})
+    }}).catch(e => console.warn("State sync failed:", e));
+  }}
+  deckPos++;
+  renderDeck();
+}}
+document.addEventListener("keydown", e => {{
+  if (document.getElementById("deck-overlay").style.display !== "flex") return;
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+  if (e.key === "Escape") {{ closeDeck(); return; }}
+  if (!deckCurrent() && (e.key === " " || e.key === "Enter")) {{ e.preventDefault(); closeDeck(); return; }}
+  if (e.key === "a") deckResolve("act");
+  else if (e.key === "l") deckResolve("revisit");
+  else if (e.key === "x") deckResolve("archive");
+  else if (e.key === " ") {{ e.preventDefault(); deckResolve("skip"); }}
+}});
+if (DECK.length > 0) {{
+  var rb = document.getElementById("review-btn");
+  rb.style.display = "";
+  rb.textContent = "Review (" + DECK.length + ")";
+}}
 document.querySelectorAll(".filters button").forEach(btn => {{
   btn.addEventListener("click", () => {{
     document.querySelectorAll(".filters button").forEach(b => b.classList.remove("active"));
@@ -1264,7 +1405,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(LOCKED_HTML.encode())
                 return
             try:
-                html = build_html(_load_data()["items"])
+                html = build_html(_load_data()["items"],
+                                  deck_urls=[i["url"] for i in get_deck()])
                 HTML_FILE.write_text(html)
             except Exception as e:
                 print(f"[view] Rebuild failed ({e}), serving cached")
@@ -1347,7 +1489,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             body = {}
 
-        is_ingest = self.path not in ("/delete", "/retry", "/failures/delete", "/state", "/ask")
+        is_ingest = self.path not in ("/delete", "/retry", "/failures/delete", "/state", "/ask", "/deck/skip")
 
         # Durable inbox capture: record every incoming link before auth and fetch.
         if is_ingest:
@@ -1398,6 +1540,13 @@ class Handler(BaseHTTPRequestHandler):
             state = body.get("state", "").strip().lower()
             ok = set_item_state(url, state)
             self.wfile.write(json.dumps({"ok": ok}).encode())
+            return
+
+        if self.path == "/deck/skip":
+            url = body.get("url", "").strip()
+            if url:
+                record_deck_skip(url)
+            self.wfile.write(json.dumps({"ok": bool(url)}).encode())
             return
 
         if self.path == "/ask":

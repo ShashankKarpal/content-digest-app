@@ -112,11 +112,13 @@ def triage_link(base, token, url, state, expires):
     return f"{base}/triage?u={quote(url, safe='')}&s={state}&e={expires}&sig={sig}"
 
 
-def pick_resurfaced(items, resurface, now):
+def pick_resurfaced(items, resurface, now, limit=RESURFACE_MAX):
     """Pure-arithmetic backlog selection: score = age_days * relevance,
     act-marked items first, at most one item per category while choice lasts.
     Skips items saved in the last 24h (they are in the new-saves section),
-    items on resurface cooldown, and items already at the strike limit."""
+    items on resurface cooldown, and items already at the strike limit.
+    Shared with the /view triage deck (server.py imports this; limit=10 there)
+    so the brief and the deck rank from one scorer and one fatigue ledger."""
     cutoff_24h = now - timedelta(hours=24)
     cands = []
     for it in items:
@@ -145,14 +147,14 @@ def pick_resurfaced(items, resurface, now):
     cands.sort(key=lambda t: (t[0], t[1]), reverse=True)
     picked, seen_cats = [], set()
     for _, _, it in cands:
-        if len(picked) >= RESURFACE_MAX:
+        if len(picked) >= limit:
             break
         if it.get("category") in seen_cats:
             continue
         picked.append(it)
         seen_cats.add(it.get("category"))
     for _, _, it in cands:  # fill remaining slots if diversity left gaps
-        if len(picked) >= RESURFACE_MAX:
+        if len(picked) >= limit:
             break
         if it not in picked:
             picked.append(it)
