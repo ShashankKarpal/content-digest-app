@@ -69,7 +69,13 @@ class ContentDigestClient(rumps.App):
             rumps.notification("Content Digest", "Error", f"Could not reach server: {e}")
 
     def view_kb(self, _):
-        webbrowser.open(f"{SERVER}/view")
+        # First open carries the token once; the server swaps it for a session
+        # cookie and redirects to a clean /view URL.
+        if AUTH_TOKEN:
+            from urllib.parse import quote
+            webbrowser.open(f"{SERVER}/view?token={quote(AUTH_TOKEN)}")
+        else:
+            webbrowser.open(f"{SERVER}/view")
 
     def quit_app(self, _):
         rumps.quit_application()

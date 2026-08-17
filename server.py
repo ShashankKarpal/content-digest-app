@@ -169,9 +169,34 @@ GROQ_API_KEY = _SECRETS.get("groq_api_key", "")
 GROQ_MODEL = "llama-3.1-8b-instant"  # llama3-8b-8192 decommissioned by Groq (verified 2026-07-19)
 
 AUTH_TOKEN = _SECRETS.get("auth_token", "")
-if not AUTH_TOKEN:
-    print("[server] WARNING: auth_token is missing or empty in secrets.json; "
-          "ingest endpoints will reject all requests until it is set.")
+if AUTH_TOKEN in ("", "NEW_TOKEN", "YOUR_TOKEN_HERE"):
+    # A known placeholder is treated as no token at all: better to reject
+    # everything loudly than to run production auth on a guessable string.
+    AUTH_TOKEN = ""
+    print("[server] WARNING: auth_token is missing or a placeholder in secrets.json; "
+          "all authenticated endpoints will reject requests until a real token is set.")
+
+COOKIE_NAME = "cd_session"
+
+
+def _session_cookie_value():
+    """Cookie value derived from the token: proves knowledge of the secret
+    without ever placing the bearer token itself in browser storage."""
+    return hmac.new(AUTH_TOKEN.encode(), b"content-digest-cookie-v1", "sha256").hexdigest()
+
+
+# Trusted source ranges: loopback, RFC1918 private, and the 100.64/10 CGNAT
+# block Tailscale uses. Anything else (a port-forward, a public interface)
+# is refused outright, before auth is even considered.
+_TRUSTED_SOURCE_RE = re.compile(
+    r"^(127\.|10\.|192\.168\."
+    r"|172\.(1[6-9]|2\d|3[01])\."
+    r"|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)"
+)
+
+
+def _trusted_source(ip):
+    return ip == "::1" or bool(_TRUSTED_SOURCE_RE.match(ip))
 
 is_processing = False
 data_lock = threading.Lock()
@@ -1076,9 +1101,64 @@ render();
 </html>"""
 
 
+LOCKED_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Content Digest</title></head>
+<body style="background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,sans-serif;padding:40px;max-width:600px;margin:0 auto;">
+<h2 style="color:#ff6b35;">Locked</h2>
+<p>This knowledge base requires a one-time unlock per device.</p>
+<p>Open <code style="color:#ff9f1c;">/view?token=YOUR_AUTH_TOKEN</code> once in this browser
+(the token from secrets.json). A session cookie keeps you signed in afterwards.</p>
+</body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
+    def _bearer_ok(self):
+        auth = self.headers.get("Authorization", "")
+        return bool(AUTH_TOKEN) and hmac.compare_digest(
+            auth.encode(), f"Bearer {AUTH_TOKEN}".encode())
+
+    def _cookie_ok(self):
+        if not AUTH_TOKEN:
+            return False
+        expected = _session_cookie_value().encode()
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, val = part.strip().partition("=")
+            if name == COOKIE_NAME and val and hmac.compare_digest(val.encode(), expected):
+                return True
+        return False
+
+    def _authed(self):
+        return self._bearer_ok() or self._cookie_ok()
+
+    def _deny(self, code=401, msg="Unauthorized"):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"ok": False, "error": msg}).encode())
+
     def do_GET(self):
-        if self.path == "/view":
+        if not _trusted_source(self.client_address[0]):
+            self._deny(403, "Forbidden source")
+            return
+        path, _, query = self.path.partition("?")
+        if path == "/view":
+            if not self._cookie_ok():
+                import urllib.parse as _up
+                supplied = _up.parse_qs(query).get("token", [""])[0]
+                if AUTH_TOKEN and hmac.compare_digest(supplied.encode(), AUTH_TOKEN.encode()):
+                    self.send_response(302)
+                    self.send_header("Location", "/view")
+                    self.send_header(
+                        "Set-Cookie",
+                        f"{COOKIE_NAME}={_session_cookie_value()}; Path=/; "
+                        f"Max-Age=31536000; HttpOnly; SameSite=Lax")
+                    self.end_headers()
+                    return
+                self.send_response(401)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(LOCKED_HTML.encode())
+                return
             try:
                 html = build_html(_load_data()["items"])
                 HTML_FILE.write_text(html)
@@ -1090,13 +1170,16 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(html.encode())
             return
-        if self.path == "/health":
+        if path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "processing": is_processing}).encode())
             return
-        if self.path == "/failures":
+        if path == "/failures":
+            if not self._authed():
+                self._deny()
+                return
             failures = _load_failures()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1104,7 +1187,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(failures).encode())
             return
-        if self.path == "/manifest.webmanifest":
+        if path == "/manifest.webmanifest":
             manifest = {
                 "name": "Content Digest",
                 "short_name": "Digest",
@@ -1124,9 +1207,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(manifest).encode())
             return
-        if self.path.startswith("/assets/"):
+        if path.startswith("/assets/"):
             asset_dir = (BASE_DIR / "design" / "web").resolve()
-            target = (asset_dir / self.path[len("/assets/"):]).resolve()
+            target = (asset_dir / path[len("/assets/"):]).resolve()
             ctypes = {".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
             if target.parent == asset_dir and target.is_file() and target.suffix in ctypes:
                 self.send_response(200)
@@ -1149,6 +1232,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if not _trusted_source(self.client_address[0]):
+            self._deny(403, "Forbidden source")
+            return
+
         # Read the body FIRST so the URL is captured before auth or fetch can fail.
         try:
             length = int(self.headers.get("Content-Length", 0))
@@ -1165,14 +1252,12 @@ class Handler(BaseHTTPRequestHandler):
                 _record_inbox(_inbox_url)
 
         # Auth gate runs AFTER capture, so a rejected link is still recorded.
-        if is_ingest:
-            auth = self.headers.get("Authorization", "")
-            if not AUTH_TOKEN or not hmac.compare_digest(auth, f"Bearer {AUTH_TOKEN}"):
-                self.send_response(401)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": "Unauthorized"}).encode())
-                return
+        # EVERY POST endpoint requires auth: bearer token (clients) or the
+        # session cookie (the /view UI). Mutating endpoints were previously
+        # exempt; that exemption was the core of issue #2.
+        if not self._authed():
+            self._deny()
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

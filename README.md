@@ -109,11 +109,9 @@ Real credentials live only on local machines. Nothing in this repository holds a
 
 ## Network exposure
 
-Read this before running the server anywhere but home.
+The server binds `0.0.0.0:7778` but refuses any connection that does not come from loopback, an RFC1918 private range, or the Tailscale CGNAT block (100.64/10). Every POST endpoint, including `/delete`, `/state`, and `/ask`, requires the bearer token or a valid session cookie, and the knowledge base at `/view` is locked behind a one-time `/view?token=YOUR_AUTH_TOKEN` unlock per browser (it sets a year-long session cookie; the token itself is never stored in the browser). Placeholder token values are treated as no token at all: the server rejects everything until a real random token is set.
 
-The server binds `0.0.0.0:7778`, so every device on your network can reach it, not just the Mac it runs on. Write endpoints such as `/add` require the bearer token, but the knowledge base pages and other read endpoints are served without authentication: anyone on the same network can read everything you have saved.
-
-Treat it as **safe on a trusted home Wi-Fi only**. Do not port-forward it, do not run it on public, office, or shared networks, and use a tailnet (Tailscale) or an authenticating reverse proxy if you need remote access. Closing this gap properly is tracked in [issue #2](https://github.com/ShashankKarpal/content-digest-app/issues/2).
+Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote access. There is no TLS; on a hostile local network, traffic is readable in transit.
 
 ## Usage
 
@@ -187,7 +185,7 @@ To ship: commit and push to GitHub from the dev machine. Never edit code on the 
 - The Mac address changes across networks; update the iPhone shortcut if capture stops working.
 - YouTube videos without transcripts hit the fetch failure guard rather than guessing from the title.
 - LinkedIn saved-post harvesting is not built; the Chrome extension covers individual pages.
-- Read endpoints are unauthenticated; see Network exposure above.
+- No TLS; see Network exposure above.
 
 ## Privacy
 
