@@ -1106,8 +1106,16 @@ LOCKED_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <body style="background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,sans-serif;padding:40px;max-width:600px;margin:0 auto;">
 <h2 style="color:#ff6b35;">Locked</h2>
 <p>This knowledge base requires a one-time unlock per device.</p>
-<p>Open <code style="color:#ff9f1c;">/view?token=YOUR_AUTH_TOKEN</code> once in this browser
-(the token from secrets.json). A session cookie keeps you signed in afterwards.</p>
+<p style="color:#888;font-size:14px;">Paste the auth token from secrets.json. A session cookie
+keeps this device signed in afterwards; the token itself is not stored.</p>
+<!-- GET form to /view?token=... so installed PWAs (own cookie jar, no address
+     bar) can unlock themselves without leaving the app. -->
+<form method="GET" action="/view" style="display:flex;gap:8px;margin-top:16px;">
+  <input type="password" name="token" placeholder="Auth token" autocomplete="off"
+         style="flex:1;background:#1e1e1e;border:1px solid #333;color:#e0e0e0;padding:10px 14px;border-radius:10px;font-size:14px;outline:none;">
+  <button type="submit"
+          style="background:#ff6b35;border:none;color:#000;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Unlock</button>
+</form>
 </body></html>"""
 
 
