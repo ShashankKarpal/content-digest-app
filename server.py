@@ -860,7 +860,7 @@ def build_html(items, failures=None, deck_urls=None):
   @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{ font-family: 'Montserrat', -apple-system, system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #1a1a2e; color: #e0e0e0; }}
-  h1 {{ color: #ff6b35; margin-bottom: 4px; font-size: 24px; }}
+  h1 {{ color: #b17e51; margin-bottom: 4px; font-size: 24px; }}
   h1.brand {{ display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }}
   h1.brand svg {{ height: 34px; width: auto; display: block; }}
   .subtitle {{ color: #888; font-size: 14px; margin-bottom: 20px; }}
@@ -918,11 +918,11 @@ def build_html(items, failures=None, deck_urls=None):
   .state-pill.archive {{ background: #444; color: #ccc; }}
   .ask-row {{ display: flex; gap: 8px; margin-bottom: 16px; }}
   .ask-row input {{ flex: 1; background: #1e1e1e; border: 1px solid #333; color: #e0e0e0; padding: 9px 14px; border-radius: 10px; font-size: 13px; outline: none; font-family: 'Montserrat', sans-serif; }}
-  .ask-row input:focus {{ border-color: #ff6b35; }}
-  .ask-row button {{ background: #ff6b35; border: none; color: #000; padding: 9px 18px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
+  .ask-row input:focus {{ border-color: #b17e51; }}
+  .ask-row button {{ background: #b17e51; border: none; color: #000; padding: 9px 18px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
   .ask-row button:disabled {{ opacity: 0.5; cursor: wait; }}
-  #review-btn {{ background: #1e1e1e; border: 1px solid #ff6b35; color: #ff6b35; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
-  #review-btn:hover {{ background: #ff6b35; color: #000; }}
+  #review-btn {{ background: #1e1e1e; border: 1px solid #b17e51; color: #b17e51; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
+  #review-btn:hover {{ background: #b17e51; color: #000; }}
   .deck-overlay {{ display: none; position: fixed; inset: 0; background: rgba(10,10,20,0.96); z-index: 100; align-items: center; justify-content: center; padding: 16px; }}
   .deck-card {{ background: #16213e; border: 1px solid #2a3a5e; border-radius: 16px; padding: 24px; max-width: 560px; width: 100%; max-height: 82vh; overflow-y: auto; }}
   .deck-top {{ display: flex; justify-content: space-between; align-items: center; color: #888; font-size: 13px; margin-bottom: 14px; }}
@@ -1205,7 +1205,7 @@ function renderDeck() {{
       <div style="font-size:36px;color:#ff9f1c;">&#10003;</div>
       <h3 style="margin:10px 0;color:#fff;">Deck clear</h3>
       <p style="color:#9CA3AF;font-size:14px;">${{deckTriaged}} triaged, ${{deckSkipped}} skipped. Nothing left to review today.</p>
-      <button style="margin-top:18px;padding:11px 26px;border:none;border-radius:10px;background:#ff6b35;color:#000;font-weight:600;font-size:14px;cursor:pointer;font-family:'Montserrat',sans-serif;" onclick="closeDeck()">Done</button>
+      <button style="margin-top:18px;padding:11px 26px;border:none;border-radius:10px;background:#b17e51;color:#000;font-weight:600;font-size:14px;cursor:pointer;font-family:'Montserrat',sans-serif;" onclick="closeDeck()">Done</button>
     </div>`;
     return;
   }}
@@ -1304,7 +1304,7 @@ render();
 LOCKED_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Content Digest</title></head>
 <body style="background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,sans-serif;padding:40px;max-width:600px;margin:0 auto;">
-<h2 style="color:#ff6b35;">Locked</h2>
+<h2 style="color:#b17e51;">Locked</h2>
 <p>This knowledge base requires a one-time unlock per device.</p>
 <p style="color:#888;font-size:14px;">Paste the auth token from secrets.json. A session cookie
 keeps this device signed in afterwards; the token itself is not stored.</p>
@@ -1314,7 +1314,7 @@ keeps this device signed in afterwards; the token itself is not stored.</p>
   <input type="password" name="token" placeholder="Auth token" autocomplete="off"
          style="flex:1;background:#1e1e1e;border:1px solid #333;color:#e0e0e0;padding:10px 14px;border-radius:10px;font-size:14px;outline:none;">
   <button type="submit"
-          style="background:#ff6b35;border:none;color:#000;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Unlock</button>
+          style="background:#b17e51;border:none;color:#000;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Unlock</button>
 </form>
 </body></html>"""
 
@@ -1384,7 +1384,7 @@ class Handler(BaseHTTPRequestHandler):
                 "<title>Content Digest</title></head>"
                 "<body style='background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,sans-serif;"
                 "padding:40px;max-width:600px;margin:0 auto;'>"
-                f"<h2 style='color:#ff6b35;'>Content Digest</h2><p>{msg}</p>"
+                f"<h2 style='color:#b17e51;'>Content Digest</h2><p>{msg}</p>"
                 "<p style='color:#666;font-size:13px;'>You can close this tab.</p>"
                 "</body></html>").encode())
             return
