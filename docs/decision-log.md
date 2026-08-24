@@ -1,5 +1,30 @@
 # docs/decision-log.md
 
+## 2026-08-24 | Client Runtime | Own uv venv and notification identity, off Homebrew Python
+
+Context: The client LaunchAgent ran /opt/homebrew/bin/python3. When Homebrew
+python@3.14 was removed on 2026-08-16 during the uv migration, the agent
+failed to spawn with exit code 78 (EX_CONFIG) and stayed down silently until
+2026-08-24; the same removal took down switchdeck the same way. After a brew
+reinstall revived it, the client still notified under the identity "Python"
+(org.python.python, the framework interpreter's own bundle), and its rumps
+dependency lived in Homebrew's site-packages, which a Python major bump wipes.
+
+Decision: The client now runs from ~/.contentdigest-venv, built on a
+uv-managed CPython that no brew operation can remove, with rumps installed in
+the venv and an Info.plist beside the interpreter declaring
+com.shashank.contentdigest / Content Digest. The installed LaunchAgent's
+ProgramArguments:0 points at the venv python. No code change; client.py
+resolves all paths from __file__ and needed none.
+
+Reason: Same incident class and same fix as switchdeck v1.9 (see that repo's
+CLAUDE.md). Notification delivery from the venv verified inside a live rumps
+run loop on macOS 26.6.2. Banners now say Content Digest, not Python. Note:
+the venv Info.plist is removed by a venv rebuild; recreate it (two keys:
+CFBundleIdentifier, CFBundleName) after any rebuild, or notifications raise.
+
+---
+
 ## Decision Log — Content Digest App
 
 Format: Date | Context | Decision | Reason
