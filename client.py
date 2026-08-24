@@ -22,6 +22,61 @@ except Exception:
     AUTH_TOKEN = ""
 
 
+def request_notify_authorization():
+    """Ask the modern notification centre for banner and sound rights.
+
+    Runs once at startup from the Content Digest.app bundle (2026-08-24
+    decision log). First launch prompts; the answer is keyed to the bundle
+    identifier com.shashank.contentdigest. Failures print to stderr, which
+    the LaunchAgent routes to ~/contentdigest-client.log, because a silent
+    notification failure is how switchdeck lost banners for a year."""
+    try:
+        import UserNotifications as UN
+        center = UN.UNUserNotificationCenter.currentNotificationCenter()
+
+        def _cb(granted, error):
+            print("notify authorization granted=%s error=%s" % (granted, error),
+                  file=sys.stderr, flush=True)
+
+        opts = UN.UNAuthorizationOptionAlert | UN.UNAuthorizationOptionSound
+        center.requestAuthorizationWithOptions_completionHandler_(opts, _cb)
+    except Exception as e:
+        print("notify authorization request failed: %r" % e,
+              file=sys.stderr, flush=True)
+
+
+def notify(title, subtitle, message):
+    """Banner plus default sound via the modern centre, falling back to the
+    legacy rumps path with evidence on stderr. Legacy NSUserNotification on
+    macOS 26 files notifications without presenting them unless the modern
+    authorization exists, so the modern path goes first."""
+    try:
+        import UserNotifications as UN
+        content = UN.UNMutableNotificationContent.alloc().init()
+        content.setTitle_(str(title))
+        content.setSubtitle_(str(subtitle))
+        content.setBody_(str(message))
+        content.setSound_(UN.UNNotificationSound.defaultSound())
+        import time as _t
+        req = UN.UNNotificationRequest.requestWithIdentifier_content_trigger_(
+            "contentdigest-%f" % _t.time(), content, None)
+
+        def _cb(error):
+            if error:
+                print("notify post error: %s" % error, file=sys.stderr, flush=True)
+
+        UN.UNUserNotificationCenter.currentNotificationCenter() \
+            .addNotificationRequest_withCompletionHandler_(req, _cb)
+        return
+    except Exception as e:
+        print("modern notify failed (%r), trying legacy" % e,
+              file=sys.stderr, flush=True)
+    try:
+        rumps.notification(title, subtitle, message)
+    except Exception as e:
+        print("legacy notify failed too: %r" % e, file=sys.stderr, flush=True)
+
+
 class ContentDigestClient(rumps.App):
     def __init__(self):
         # Brand symbol as a macOS template icon (auto light/dark). Falls back
@@ -64,9 +119,9 @@ class ContentDigestClient(rumps.App):
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 json.loads(resp.read().decode())
-            rumps.notification("Content Digest", "URL sent", f"Processing: {url[:60]}")
+            notify("Content Digest", "URL sent", f"Processing: {url[:60]}")
         except Exception as e:
-            rumps.notification("Content Digest", "Error", f"Could not reach server: {e}")
+            notify("Content Digest", "Error", f"Could not reach server: {e}")
 
     def view_kb(self, _):
         # First open carries the token once; the server swaps it for a session
@@ -82,4 +137,5 @@ class ContentDigestClient(rumps.App):
 
 
 if __name__ == "__main__":
+    request_notify_authorization()
     ContentDigestClient().run()

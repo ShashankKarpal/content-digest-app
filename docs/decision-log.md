@@ -1,5 +1,31 @@
 # docs/decision-log.md
 
+## 2026-08-24 (later) | Client Runtime | Real .app bundle and modern notifications
+
+Context: The morning's venv fix gave the client a notification identity but
+not banners. macOS only presents notifications for real,
+LaunchServices-registered app bundles; unbundled processes get their
+notifications silently filed into Notification Center. This is also why the
+client showed as "python3" or "Python" in menu bar tools instead of its
+own name.
+
+Decision: The client now runs from ~/Applications/Content Digest.app, a
+minimal ad-hoc-signed bundle (bundle id com.shashank.contentdigest, brand
+icon from design/web/icon-512.png) whose executable is a copy of the
+uv-managed static CPython; stdlib and site-packages are wired via
+PYTHONHOME/PYTHONPATH in the LaunchAgent, packages stay in
+~/.contentdigest-venv. client.py gained request_notify_authorization() at
+startup and a notify() helper that posts through the modern
+UserNotifications centre (banner plus default sound) and falls back to the
+legacy rumps path with evidence on stderr, which the LaunchAgent now routes
+to ~/contentdigest-client.log.
+
+Reason: Authorization verified granted=True under the bundle identity on
+2026-08-24 (logged in ~/contentdigest-client.log). Same incident class and
+fix as switchdeck v1.9.1; see that repo's CLAUDE.md for the full ruling.
+
+---
+
 ## 2026-08-24 | Client Runtime | Own uv venv and notification identity, off Homebrew Python
 
 Context: The client LaunchAgent ran /opt/homebrew/bin/python3. When Homebrew
