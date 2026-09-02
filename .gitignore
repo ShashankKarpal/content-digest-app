@@ -51,3 +51,4 @@ brief_last.html
 # --- secrets hygiene completion (audit 2026-07-30) ---
 .env.*
 !.env.example
+loopcheck-history.txt

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Content Digest Capture",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Send the current page (URL + rendered text) to your Content Digest server. Works on Reddit, LinkedIn, and anything your browser can see.",
-  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_title": "Save to Content Digest"

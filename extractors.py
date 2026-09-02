@@ -42,7 +42,9 @@ def _get(url, timeout=20, headers=None):
         h.update(headers)
     req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="ignore"), r.geturl()
+        # 2 MB cap: the runtime host has 8 GB and an unbounded read is a
+        # memory DoS from any page we are asked to fetch (audit 2026-09-02).
+        return r.read(2_000_000).decode("utf-8", errors="ignore"), r.geturl()
 
 
 # ---------------------------------------------------------------------------

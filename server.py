@@ -2,9 +2,11 @@
 """Content Digest Server -- headless, always-on URL processor."""
 
 import hmac
+import ipaddress
 import json
 import math
 import re
+import socket
 import sys
 import threading
 import time
@@ -117,19 +119,69 @@ _JUNK_SUMMARY_MARKERS = (
 )
 
 
-def _blocked_url_reason(url):
-    """Reject URLs that can never be real content."""
+MAX_FETCH_BYTES = 2_000_000    # cap on any remote body we read
+MAX_BODY_BYTES = 1_000_000     # cap on a POST body (extension captures are <= 20k chars)
+
+
+def _js(obj):
+    """JSON for inlining inside a <script> block: json.dumps does not escape
+    '</', so a title or URL containing '</script>' broke out of the script
+    context (stored XSS, audit 2026-09-02)."""
+    return json.dumps(obj).replace("</", "<\\/")
+
+
+def _write_html(text):
+    """Atomic replace so a reader never sees a torn knowledge.html."""
+    tmp = HTML_FILE.with_suffix(".tmp")
+    tmp.write_text(text)
+    tmp.rename(HTML_FILE)
+
+
+def _address_is_internal(addr):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+            or ip.is_multicast or ip.is_unspecified
+            or ip in ipaddress.ip_network("100.64.0.0/10"))   # CGNAT incl. Tailscale
+
+
+def _blocked_url_reason(url, resolve=True):
+    """Reject URLs that can never be real content, and URLs the server must
+    never fetch: non-http schemes, and hosts that resolve to loopback, RFC1918,
+    link-local, or the tailnet range. The literal-IP regex alone let a public
+    hostname pointing at 127.0.0.1 (or an IPv6 literal, or file://) through
+    to urlopen (audit 2026-09-02). Call again on the post-redirect URL."""
     try:
         import urllib.parse as _up
-        host = _up.urlsplit(url).hostname or ""
+        parts = _up.urlsplit(url)
+        host = parts.hostname or ""
+        scheme = (parts.scheme or "").lower()
     except Exception:
-        return None
+        return "Unparseable URL"
+    if scheme not in ("http", "https"):
+        return f"Unsupported scheme: {scheme or 'none'}"
+    if not host:
+        return "URL has no host"
     host = host.lower()
     bare = host[4:] if host.startswith("www.") else host
     if bare in _BLOCKED_HOSTS:
         return f"Placeholder/test domain: {bare}"
-    if _PRIVATE_IP_RE.match(bare) or bare.endswith(".local"):
+    if _PRIVATE_IP_RE.match(bare) or bare.endswith(".local") or bare.endswith(".localhost") \
+            or bare == "localhost" or _address_is_internal(bare):
         return f"Local/private address: {bare}"
+    if resolve:
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror:
+            return None   # unresolvable: let the fetch fail with its own reason
+        except Exception:
+            return None
+        for info in infos:
+            addr = info[4][0]
+            if _address_is_internal(addr):
+                return f"Host resolves to an internal address: {bare} -> {addr}"
     return None
 
 
@@ -249,7 +301,11 @@ def fetch_url_content(url):
         import trafilatura
         req = urllib.request.Request(url, headers=ua)
         with urllib.request.urlopen(req, timeout=15) as r:
-            html = r.read().decode('utf-8', errors='ignore')
+            final = r.geturl() or url
+            blocked = _blocked_url_reason(final, resolve=False) if final != url else None
+            if blocked:
+                raise ValueError(f"redirected to a blocked address ({blocked})")
+            html = r.read(MAX_FETCH_BYTES).decode('utf-8', errors='ignore')
         text = trafilatura.extract(html, include_comments=False, include_tables=True)
         if text:
             return text[:3000]
@@ -262,7 +318,7 @@ def fetch_url_content(url):
     try:
         req = urllib.request.Request('https://r.jina.ai/' + url, headers=ua)
         with urllib.request.urlopen(req, timeout=30) as r:
-            md = r.read().decode('utf-8', errors='ignore')
+            md = r.read(MAX_FETCH_BYTES).decode('utf-8', errors='ignore')
         if md and len(md.strip()) > 300 and not _junk_content_reason(md.strip()[:3000]):
             print('[fetch] reader proxy succeeded')
             return md[:3000]
@@ -542,13 +598,19 @@ def _save_failures(data):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def _record_inbox(url):
+def _record_inbox(url, authed=False):
+    """Durable capture log. `authed` records whether the request carried a
+    valid credential: the reconcile sweep only re-queues authenticated
+    entries, otherwise the pre-auth capture was an unauthenticated write path
+    into the whole pipeline (audit 2026-09-02). Capped so a chatty peer
+    cannot grow the file without bound."""
     now = datetime.now(timezone(timedelta(hours=4))).isoformat()
     try:
         inbox = json.loads(INBOX_FILE.read_text()) if INBOX_FILE.exists() else {"items": []}
     except Exception:
         inbox = {"items": []}
-    inbox["items"].insert(0, {"url": url, "received_at": now})
+    inbox["items"].insert(0, {"url": url, "received_at": now, "authed": bool(authed)})
+    inbox["items"] = inbox["items"][:500]
     tmp = INBOX_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(inbox, indent=2))
     tmp.rename(INBOX_FILE)
@@ -676,7 +738,7 @@ def process_url(url, content=None):
                     fresh["items"].insert(0, item)
                     _save_data(fresh)
             _remove_failure(url)
-            HTML_FILE.write_text(build_html(_load_data()["items"]))
+            _write_html(build_html(_load_data()["items"]))
             threading.Thread(target=embed_item, args=(item,), daemon=True).start()
             print(f"[saved] {item['title']} ({item['category']})")
             return {"status": "saved", "title": item["title"], "category": item["category"]}
@@ -763,7 +825,7 @@ def decay_sweep():
                 archived += 1
         if archived:
             _save_data(data)
-            HTML_FILE.write_text(build_html(data["items"]))
+            _write_html(build_html(data["items"]))
     if archived:
         print(f"[decay] Auto-archived {archived} item(s)")
     return archived
@@ -783,7 +845,7 @@ def set_item_state(url, state):
                 break
         if found:
             _save_data(data)
-            HTML_FILE.write_text(build_html(data["items"]))
+            _write_html(build_html(data["items"]))
     return found
 
 
@@ -802,6 +864,8 @@ def _reconcile_inbox():
     cutoff = datetime.now(timezone(timedelta(hours=4))) - timedelta(minutes=30)
     orphans = []
     for entry in inbox["items"]:
+        if not entry.get("authed"):
+            continue   # never auto-process what an unauthenticated peer posted
         raw = entry.get("url", "")
         url = normalize_url(raw)
         if not url or url in saved or url in failed or raw in saved or raw in failed:
@@ -824,7 +888,7 @@ def retry_loop():
             decay_sweep()
             retryable = [
                 f["url"] for f in _load_failures()["items"]
-                if f.get("error_type") == "fetch" and f.get("retry_count", 0) < MAX_AUTO_RETRIES
+                if f.get("error_type") in ("fetch", "ai") and f.get("retry_count", 0) < MAX_AUTO_RETRIES
             ][:10]
             orphans = _reconcile_inbox()
             queue = retryable + [u for u in orphans if u not in retryable]
@@ -986,9 +1050,9 @@ def build_html(items, failures=None, deck_urls=None):
 <div id="items-container"></div>
 <div id="empty-state" style="display:none">No items saved yet. Add a URL to get started.</div>
 <script>
-var DATA = {json.dumps(items)};
-var FAILURES = {json.dumps(failures)};
-var DECK = {json.dumps(deck_urls)};
+var DATA = {_js(items)};
+var FAILURES = {_js(failures)};
+var DECK = {_js(deck_urls)};
 var currentFilter = "All";
 var currentSort = "newest";
 var currentSearch = "";
@@ -997,6 +1061,10 @@ var searchMode = "all";
 var searchDebounce;
 function escapeHtml(s) {{
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}}
+function safeHref(u) {{
+  // Only http(s) may become a link; anything else (javascript:, data:) is inert.
+  return /^https?:[/][/]/i.test(String(u)) ? escapeHtml(u) : "#";
 }}
 function formatDate(s) {{
   if (!s) return "";
@@ -1033,7 +1101,7 @@ function render() {{
       var badgeClass = "badge-" + (f.error_type || "fetch");
       return `<div class="failure-card" data-url="${{escapeHtml(f.url)}}">
         <div class="meta"><span class="${{badgeClass}}">${{escapeHtml(f.error_type || "unknown")}}</span> &nbsp; First failed: ${{firstDate}}${{retryNote}}</div>
-        <div class="url"><a href="${{f.url}}" target="_blank" style="color:#ff9f1c;">${{escapeHtml(f.url)}}</a></div>
+        <div class="url"><a href="${{safeHref(f.url)}}" target="_blank" rel="noopener" style="color:#ff9f1c;">${{escapeHtml(f.url)}}</a></div>
         <div class="reason">${{escapeHtml(f.error_reason || "No reason recorded")}}</div>
         <div class="actions">
           <button class="retry-btn" onclick="retryFailure(this)">Retry</button>
@@ -1083,7 +1151,7 @@ function render() {{
       </div>`;
     return `<div class="item${{st === "archive" ? " archived" : ""}}" data-url="${{escapeHtml(item.url)}}">
       <button class="dismiss" onclick="dismissItem(this)" title="Remove">&times;</button>
-      <h3><a href="${{item.url}}" target="_blank">${{escapeHtml(item.title)}}</a></h3>
+      <h3><a href="${{safeHref(item.url)}}" target="_blank" rel="noopener">${{escapeHtml(item.title)}}</a></h3>
       <div class="meta">${{statePill}}<span class="cat-tag">${{item.category}}</span>${{date}}</div>
       <p class="summary">${{escapeHtml(item.summary)}}</p>
       ${{(item.action_points && item.action_points.length) ? `<div class="action-points"><strong style="color:#ff9f1c;font-size:13px;">Action Pointers</strong><ul style="margin-top:6px;padding-left:18px;color:#ccc;font-size:13px;line-height:1.8">${{item.action_points.map(a => `<li>${{escapeHtml(a)}}</li>`).join("")}}</ul></div>` : ""}}
@@ -1120,7 +1188,7 @@ function askKB() {{
     headers: {{"Content-Type": "application/json"}},
     body: JSON.stringify({{question: q}})
   }}).then(r => r.json()).then(res => {{
-    var src = (res.sources || []).map(s => `<a href="${{s.url}}" target="_blank">&#8594; ${{escapeHtml(s.title)}}</a>`).join("");
+    var src = (res.sources || []).map(s => `<a href="${{safeHref(s.url)}}" target="_blank" rel="noopener">&#8594; ${{escapeHtml(s.title)}}</a>`).join("");
     panel.innerHTML = `<button class="ask-close" onclick="this.parentElement.style.display='none'">&times;</button>` +
       escapeHtml(res.answer || "No answer.") +
       (src ? `<div class="ask-sources"><strong style="color:#ff9f1c;">Sources</strong>${{src}}</div>` : "");
@@ -1214,7 +1282,7 @@ function renderDeck() {{
     : "";
   card.innerHTML = `
     <div class="deck-top"><span>${{deckPos + 1}} of ${{DECK.length}} &nbsp;&middot;&nbsp; ${{DECK.length - deckPos - 1}} remaining</span><button class="deck-close" onclick="closeDeck()" title="Close">&times;</button></div>
-    <h3 style="font-size:17px;margin-bottom:6px;"><a href="${{it.url}}" target="_blank" style="color:#fff;text-decoration:none;">${{escapeHtml(it.title)}}</a></h3>
+    <h3 style="font-size:17px;margin-bottom:6px;"><a href="${{safeHref(it.url)}}" target="_blank" rel="noopener" style="color:#fff;text-decoration:none;">${{escapeHtml(it.title)}}</a></h3>
     <div class="meta"><span class="cat-tag">${{it.category}}</span>${{formatDate(it.saved_at)}}</div>
     <p class="summary">${{escapeHtml(it.summary)}}</p>
     ${{ap}}
@@ -1338,6 +1406,17 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self):
         return self._bearer_ok() or self._cookie_ok()
 
+    def _same_origin(self):
+        origin = self.headers.get("Origin", "")
+        site = self.headers.get("Sec-Fetch-Site", "")
+        if site and site not in ("same-origin", "none"):
+            return False
+        if origin:
+            from urllib.parse import urlsplit
+            if urlsplit(origin).netloc.lower() != (self.headers.get("Host", "") or "").lower():
+                return False
+        return True
+
     def _deny(self, code=401, msg="Unauthorized"):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -1409,7 +1488,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 html = build_html(_load_data()["items"],
                                   deck_urls=[i["url"] for i in get_deck()])
-                HTML_FILE.write_text(html)
+                _write_html(html)
             except Exception as e:
                 print(f"[view] Rebuild failed ({e}), serving cached")
                 html = HTML_FILE.read_text() if HTML_FILE.exists() else "<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:40px'>Content Digest is temporarily unavailable. Try again shortly.</body></html>"
@@ -1487,9 +1566,16 @@ class Handler(BaseHTTPRequestHandler):
         # Read the body FIRST so the URL is captured before auth or fetch can fail.
         try:
             length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = 0
+        if length > MAX_BODY_BYTES:
+            self._deny(413, "Body too large")
+            return
+        try:
             body = json.loads(self.rfile.read(length)) if length else {}
         except Exception:
             body = {}
+        authed = self._authed()
 
         is_ingest = self.path not in ("/delete", "/retry", "/failures/delete", "/state", "/ask", "/deck/skip")
 
@@ -1497,14 +1583,20 @@ class Handler(BaseHTTPRequestHandler):
         if is_ingest:
             _inbox_url = body.get("url", "").strip()
             if _inbox_url:
-                _record_inbox(_inbox_url)
+                _record_inbox(_inbox_url, authed=authed)
 
         # Auth gate runs AFTER capture, so a rejected link is still recorded.
         # EVERY POST endpoint requires auth: bearer token (clients) or the
         # session cookie (the /view UI). Mutating endpoints were previously
         # exempt; that exemption was the core of issue #2.
-        if not self._authed():
+        if not authed:
             self._deny()
+            return
+        # Cookie-authenticated requests come from the /view page and must be
+        # same-origin; a bearer token is a deliberate machine credential and
+        # is exempt. Origin/Sec-Fetch-Site are set by every modern browser.
+        if not self._bearer_ok() and not self._same_origin():
+            self._deny(403, "Cross-origin request refused")
             return
 
         self.send_response(200)
@@ -1515,10 +1607,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/delete":
             url = body.get("url", "").strip()
             if url:
-                data = _load_data()
-                data["items"] = [i for i in data["items"] if i["url"] != url]
-                _save_data(data)
-                HTML_FILE.write_text(build_html(data["items"]))
+                with data_lock:
+                    data = _load_data()
+                    data["items"] = [i for i in data["items"] if i["url"] != url]
+                    _save_data(data)
+                _write_html(build_html(data["items"]))
             self.wfile.write(json.dumps({"ok": True}).encode())
             return
 
@@ -1526,7 +1619,7 @@ class Handler(BaseHTTPRequestHandler):
             url = body.get("url", "").strip()
             if url:
                 _remove_failure(url)
-                HTML_FILE.write_text(build_html(_load_data()["items"]))
+                _write_html(build_html(_load_data()["items"]))
             self.wfile.write(json.dumps({"ok": True}).encode())
             return
 

@@ -107,3 +107,16 @@ Append a dated note after every major session. Keep entries concise.
 - README truth pass: install section now starts server.py/client.py (app.py was the documented entry point months after it died), LM Studio claim removed (code speaks Ollama only), v0.5 row added, v1 marked data-gated, Close the loop feature section added.
 - roadmap.md: v0.5 delivered section, killed list from the red team audit recorded, sign-off rule retired (dead protocol, owner decision 2026-08-17).
 - docs/ published to the public repo minus session-handoff.md, after a redaction pass (LAN and tailnet IPs, credential specifics, account identifiers).
+
+## 2026-09-02: security pass from the fleet audit (kk1 Cowork)
+
+Read-only audit report in the owner's fleet roadmap inbox; fixes verified against a scratch copy of the server on a spare port before pushing (unauthenticated `/add` returns 401 and its inbox row carries `authed: false`; a 1.1 MB body returns 413; a cookie-authenticated POST with a foreign `Origin` returns 403 while the same request with a bearer token passes; the `/view` script block no longer contains a raw `</script>` when an item title does; `_reconcile_inbox()` returns nothing for unauthenticated rows).
+
+- Closed the pre-auth inbox reconcile path: `_record_inbox` stores whether the request was authenticated, the sweep re-queues only authenticated rows, and the inbox is capped at 500 entries. Unauthenticated LAN peers could previously have the server fetch, summarise and save any URL within six hours.
+- Stored XSS in `/view`: inlined JSON escapes `</`, every `href` goes through `safeHref()` (http and https only, `rel="noopener"`).
+- SSRF: `_blocked_url_reason` now rejects non-http schemes and empty hosts, checks IPv6 literals and `*.localhost`, resolves the hostname and rejects any address in loopback, private, link-local, reserved or CGNAT (tailnet) ranges, and re-checks the post-redirect URL after the direct fetch. Remote reads are capped at 2 MB (server and extractors), POST bodies at 1 MB.
+- Cookie-authenticated POSTs must be same-origin (`Origin` or `Sec-Fetch-Site`); bearer requests are exempt because the token is a deliberate machine credential.
+- `ai` failures are retried like `fetch` failures (an Ollama outage used to make every save in the window a permanent failure). `/delete` runs under `data_lock`; every `knowledge.html` write is atomic (tmp then rename).
+- Extension 0.5.0: token moved from `chrome.storage.sync` to `chrome.storage.local` (re-enter it once in Options), and failed captures are queued locally and replayed every 15 minutes via `chrome.alarms`, so a capture made off the tailnet lands when the server is reachable again.
+- `loopcheck-history.txt` added to .gitignore (it was untracked and unignored).
+- Deferred to the fleet roadmap: runtime watchdog (heartbeat, brief health line, M4 observer), weekly act-rate rollup inside the brief, explicit loopback plus tailnet bind, `/view?token=` in the client, dead `OLLAMA_URL` setting, `TZ` constant.

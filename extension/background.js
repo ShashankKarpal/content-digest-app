@@ -9,10 +9,50 @@ const DEFAULTS = {
 };
 
 async function getSettings() {
+  // storage.local: the token stays in this browser profile (was storage.sync).
   return new Promise((resolve) => {
-    chrome.storage.sync.get(DEFAULTS, resolve);
+    chrome.storage.local.get(DEFAULTS, resolve);
   });
 }
+
+// Captures that fail to reach the server (off-LAN, server down) are queued
+// locally and replayed every 15 minutes, so a capture never vanishes just
+// because the tailnet was not up at that moment (2026-08-31 incident).
+const PENDING_KEY = "pending";
+const FLUSH_ALARM = "cd-flush";
+
+async function postAdd(payload) {
+  const { server, token } = await getSettings();
+  const resp = await fetch(server.replace(/\/$/, "") + "/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  return resp;
+}
+
+async function queuePending(payload) {
+  const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
+  pending.push({ ...payload, queuedAt: Date.now() });
+  await chrome.storage.local.set({ [PENDING_KEY]: pending.slice(-100) });
+  chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+}
+
+async function flushPending() {
+  const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
+  if (!pending.length) { chrome.alarms.clear(FLUSH_ALARM); return; }
+  const remaining = [];
+  for (const item of pending) {
+    try { await postAdd(item); } catch (e) { remaining.push(item); }
+  }
+  await chrome.storage.local.set({ [PENDING_KEY]: remaining });
+  if (!remaining.length) chrome.alarms.clear(FLUSH_ALARM);
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === FLUSH_ALARM) flushPending();
+});
 
 function grabPageContent() {
   // Runs inside the page. Prefer the user's selection; otherwise take the
@@ -41,29 +81,21 @@ function setBadge(tabId, text, color) {
 
 async function capture(tab) {
   if (!tab || !tab.id || !/^https?:/.test(tab.url || "")) return;
-  const { server, token } = await getSettings();
   try {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: grabPageContent,
     });
     setBadge(tab.id, "...", "#ff9f1c");
-    const resp = await fetch(server.replace(/\/$/, "") + "/add", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + token,
-      },
-      body: JSON.stringify({
-        url: result.url,
-        title: result.title,
-        content: result.content,
-      }),
-    });
-    if (resp.ok) {
+    const payload = { url: result.url, title: result.title, content: result.content };
+    try {
+      await postAdd(payload);
       setBadge(tab.id, "✓", "#22c55e");
-    } else {
-      setBadge(tab.id, String(resp.status), "#c83232");
+    } catch (e) {
+      // 401/403 are configuration errors and will not heal by waiting.
+      if (/HTTP 40[13]/.test(String(e))) { setBadge(tab.id, "401", "#c83232"); return; }
+      await queuePending(payload);
+      setBadge(tab.id, "Q", "#ff9f1c");
     }
   } catch (e) {
     console.warn("Content Digest capture failed:", e);
@@ -85,19 +117,12 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== "cd-save") return;
   // Right-clicked a link: send the link URL for server-side fetch.
   if (info.linkUrl) {
-    const { server, token } = await getSettings();
     try {
-      await fetch(server.replace(/\/$/, "") + "/add", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + token,
-        },
-        body: JSON.stringify({ url: info.linkUrl }),
-      });
+      await postAdd({ url: info.linkUrl });
       if (tab && tab.id) setBadge(tab.id, "✓", "#22c55e");
     } catch (e) {
-      if (tab && tab.id) setBadge(tab.id, "✗", "#c83232");
+      await queuePending({ url: info.linkUrl });
+      if (tab && tab.id) setBadge(tab.id, "Q", "#ff9f1c");
     }
     return;
   }

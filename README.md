@@ -35,7 +35,7 @@
 - **Menu bar capture.** Click the icon, paste a URL, get a summary in seconds.
 - **iPhone share sheet.** A Shortcut posts to the server's authenticated endpoint.
 - **Chrome extension.** One click sends rendered page text, so logged-in-only pages such as Reddit and LinkedIn work.
-- **Inbox capture before auth.** URLs are accepted first and processed after, so nothing is dropped.
+- **Inbox capture before auth.** URLs are logged to `inbox.json` before the auth check so a rejected request is still visible for review, but only authenticated entries are ever re-queued for processing.
 - **Self-healing capture.** Fetch failures retry every 6 hours up to 3 attempts; inbox URLs that never became items are re-queued.
 - **URL normalization.** Tracking parameters (`utm_*`, `fbclid`, `share_id`, `si`) are stripped before dedupe and storage.
 - **Canonical URL dedupe.** The same article saved twice stays one item.
