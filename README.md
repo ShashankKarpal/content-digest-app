@@ -135,7 +135,7 @@ Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote acc
 - Headers: `Authorization: Bearer YOUR_AUTH_TOKEN`
 - Body: JSON with key `url`
 
-**Chrome extension.** Open `chrome://extensions`, enable Developer mode, Load unpacked, select `extension/`. Set your server URL and auth token in the extension options.
+**Chrome extension.** Open `chrome://extensions`, enable Developer mode, Load unpacked, select `extension/`. Set your server URL and auth token in the extension options. Upgrading from 0.5.0 or earlier: 0.5.1 moves your existing server URL and token out of Chrome's synced storage into this browser profile on first load and clears the synced copy, so there is nothing to re-enter.
 
 ## Project structure
 

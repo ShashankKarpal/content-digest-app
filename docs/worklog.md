@@ -119,4 +119,21 @@ Read-only audit report in the owner's fleet roadmap inbox; fixes verified agains
 - `ai` failures are retried like `fetch` failures (an Ollama outage used to make every save in the window a permanent failure). `/delete` runs under `data_lock`; every `knowledge.html` write is atomic (tmp then rename).
 - Extension 0.5.0: token moved from `chrome.storage.sync` to `chrome.storage.local` (re-enter it once in Options), and failed captures are queued locally and replayed every 15 minutes via `chrome.alarms`, so a capture made off the tailnet lands when the server is reachable again.
 - `loopcheck-history.txt` added to .gitignore (it was untracked and unignored).
+- Correction (see 2026-09-03): the 0.5.0 storage move shipped without a migration, so it neither preserved the settings nor actually removed the token from sync.
 - Deferred to the fleet roadmap: runtime watchdog (heartbeat, brief health line, M4 observer), weekly act-rate rollup inside the brief, explicit loopback plus tailnet bind, `/view?token=` in the client, dead `OLLAMA_URL` setting, `TZ` constant.
+
+## 2026-09-03: extension 0.5.1 — the migration 0.5.0 forgot
+
+The 0.5.0 storage pass (2026-09-02) flipped every `chrome.storage.sync` call to `chrome.storage.local` and shipped **no migration**, which caused two things:
+
+- **Silent config loss.** On upgrade `storage.local` was empty, so both the options page and the service worker fell back to the hardcoded `DEFAULTS` — server `http://localhost:7778`, empty token. Nothing prompted, nothing errored at save time; captures just started failing against a server that was not there.
+- **The token never actually left sync.** The old 64-char bearer token stayed in `chrome.storage.sync` and kept replicating to the Google account. Moving the *read* to local without purging the old *write* location closed nothing: the exposure the security pass was written to fix survived it intact.
+
+Fix, in `background.js` `chrome.runtime.onInstalled`:
+
+- One-time migration guarded by `migratedFromSync` in `storage.local`, so it never runs twice and never re-fills a key the user has since typed in.
+- Migrates every key the options page manages (`server` and `token`, not just the token), writing each only when `storage.local` has no non-empty value for it. Local always wins.
+- Calls `chrome.storage.sync.clear()` unconditionally once the copy is written, including when there was nothing to recover — leaving the token there is the bug.
+- Wrapped in try/catch at every step: an unreadable or empty sync store still sets the guard and still attempts the clear, and the listener never throws. One console line per path taken.
+
+Manifest bumped to 0.5.1. The options-page comment no longer tells the user to re-enter the token by hand, and the README upgrade note matches. Verified by `node --check` on both JS files, `json.tool` on the manifest, and a walkthrough of fresh install / upgrade-with-sync-token / upgrade-where-a-token-was-already-typed.

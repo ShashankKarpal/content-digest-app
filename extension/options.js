@@ -1,7 +1,8 @@
 const DEFAULTS = { server: "http://localhost:7778", token: "" };
 
 // storage.local, not sync: the bearer token used to replicate to the Google
-// account's sync backend (audit 2026-09-02). Re-enter it once after updating.
+// account's sync backend (audit 2026-09-02). 0.5.1 migrates the old sync values
+// across on upgrade and clears sync, so there is nothing to re-enter by hand.
 chrome.storage.local.get(DEFAULTS, (s) => {
   document.getElementById("server").value = s.server;
   document.getElementById("token").value = s.token;

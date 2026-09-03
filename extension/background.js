@@ -105,12 +105,66 @@ async function capture(tab) {
 
 chrome.action.onClicked.addListener(capture);
 
-chrome.runtime.onInstalled.addListener(() => {
+// 0.5.0 moved every setting from storage.sync to storage.local but shipped no
+// migration: settings silently fell back to DEFAULTS, and the old token stayed
+// in storage.sync still replicating to the Google account — the exact exposure
+// the move was meant to close. Runs once, guarded, and local always wins.
+const MIGRATION_KEY = "migratedFromSync";
+const MIGRATED_KEYS = Object.keys(DEFAULTS); // server, token
+
+async function migrateFromSync() {
+  try {
+    const { [MIGRATION_KEY]: alreadyDone } = await chrome.storage.local.get(MIGRATION_KEY);
+    if (alreadyDone) {
+      console.log("Content Digest migration: already done, nothing to do.");
+      return;
+    }
+
+    let old = {};
+    try {
+      old = (await chrome.storage.sync.get(MIGRATED_KEYS)) || {};
+    } catch (e) {
+      console.warn("Content Digest migration: sync storage unreadable:", e);
+    }
+
+    const local = await chrome.storage.local.get(MIGRATED_KEYS);
+    const recovered = {};
+    for (const key of MIGRATED_KEYS) {
+      // Never clobber a value the user has already typed in since the upgrade.
+      if (typeof local[key] === "string" && local[key].trim()) continue;
+      if (typeof old[key] === "string" && old[key].trim()) recovered[key] = old[key];
+    }
+    const keys = Object.keys(recovered);
+    if (keys.length) await chrome.storage.local.set(recovered);
+
+    // Purge unconditionally once the copy is written: the leftover token in
+    // sync is the whole bug, so it goes even when there was nothing to recover.
+    let purged = true;
+    try {
+      await chrome.storage.sync.clear();
+    } catch (e) {
+      purged = false;
+      console.warn("Content Digest migration: sync clear failed:", e);
+    }
+
+    await chrome.storage.local.set({ [MIGRATION_KEY]: true });
+    console.log(
+      "Content Digest migration: recovered [" + (keys.join(", ") || "nothing") +
+        "] from sync; sync " + (purged ? "cleared" : "NOT cleared") + "."
+    );
+  } catch (e) {
+    // Never throw out of the onInstalled listener.
+    console.warn("Content Digest migration failed:", e);
+  }
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.contextMenus.create({
     id: "cd-save",
     title: "Save to Content Digest",
     contexts: ["page", "selection", "link"],
   });
+  if (details.reason === "install" || details.reason === "update") migrateFromSync();
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
