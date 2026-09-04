@@ -1,5 +1,47 @@
 # docs/decision-log.md
 
+## 2026-09-03 | Extension Capture | Item identity before ingestion, synchronous outcomes
+
+Context: Three authenticated LinkedIn captures reached the server but stored a
+feed container, silently deduplicated a second post against that container, or
+stored an outbound safety wrapper. The extension treated the asynchronous
+`/add` acknowledgement as success and discarded authentication failures.
+
+Decision: Extension 0.6 makes the paste-first popup the primary workflow: the
+toolbar icon opens a popup with an empty URL field, the user pastes the exact
+URL, and Send to Content Digest submits it through `/add_sync`, which returns
+the real outcome (saved, already saved, failed, invalid) instead of an early
+200. Automatic current-page capture and right-click capture remain as optional
+helpers. Known feed containers are refused, every transport, authentication,
+or configuration failure is queued rather than discarded, and a five-result
+history plus queue count make outcomes visible.
+
+For the right-click helper on LinkedIn, ordinary DOM extraction is used when a
+post permalink or `urn:li:activity` attribute is genuinely present. LinkedIn's
+current (2026) interface uses hashed class names and, for the three real
+captures that triggered this brief, exposed neither a useful URN nor a direct
+permalink in the visible post markup, so a static DOM selector is not
+dependable. A narrow main-world bridge (`bridge.js`, LinkedIn only) therefore
+observes LinkedIn's own Copy link to post action during an explicit,
+user-initiated post resolution, and only a post-shaped LinkedIn URL or
+`lnkd.in/p/` short link is accepted. This supersedes the earlier position that
+a bridge was unnecessary: the DOM walk alone was not enough for real posts.
+
+LinkedIn short post URLs (`lnkd.in/p/<code>`) are resolved to the direct
+`linkedin.com` permalink in the extension before ingestion. Known outbound
+wrappers are decoded in the extension. When LinkedIn's safety wrapper yields a
+bare, non-redirecting `lnkd.in/<code>`, the containing post permalink wins if
+it can be determined; otherwise the capture is deliberately refused and the
+popup is offered. Ambiguous feed or container captures are always refused.
+
+Reason: Correct identity must exist before the server's durable inbox and URL
+dedupe see the request, because a wrong identity silently absorbs every later
+capture of the same container. A refused capture the user can retry by pasting
+is strictly better than a wrong save. The popup is the deterministic fallback
+that keeps working when LinkedIn changes its DOM again.
+
+---
+
 ## 2026-08-24 (later) | Client Runtime | Real .app bundle and modern notifications
 
 Context: The morning's venv fix gave the client a notification identity but

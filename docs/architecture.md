@@ -2,6 +2,54 @@
 
 ## System Architecture — Content Digest App (v0.4)
 
+### Extension capture rewrite (v0.6 candidate, 2026-09-03)
+
+The server shape is unchanged. Every extension capture now uses authenticated
+`POST /add_sync`, so the client receives `saved`, `already_saved`, `failed`, or
+`invalid` after processing instead of treating an early HTTP 200 as success.
+
+The MV3 extension remains plain JavaScript with no build step, bundler, or
+dependency. Files and responsibilities:
+
+- `popup.html` and `popup.js` implement the primary paste-first workflow. The
+  toolbar icon opens a popup with an empty URL field; the user pastes the exact
+  URL and clicks Send to Content Digest. The popup shows a working state, then
+  the honest outcome (saved, already saved, queued, refused, failed), plus
+  Save current page, Open Content Digest, Settings, a collapsed recent-activity
+  list, and the retry queue count. The field is never prefilled from the tab.
+- `shared.js` owns URL unwrapping for known redirector wrappers (LinkedIn
+  safety/go, Google, Facebook, Reddit, href.li, away.vk.com), container
+  detection, LinkedIn post detection, and identity selection.
+- `content.js` handles page-specific capture for the optional right-click path.
+  It records the exact right-click target and uses ordinary DOM extraction when
+  a post permalink or `urn:li:activity` URN is genuinely present in the markup.
+- `bridge.js` runs narrowly on `https://*.linkedin.com/*` in the MAIN world. It
+  wraps `navigator.clipboard.writeText` and re-emits the written text as a DOM
+  event. `content.js` listens for that event only while an explicit post
+  resolution is pending: after the user has asked to save, it opens LinkedIn's
+  own post menu, invokes LinkedIn's own Copy link to post action, and accepts
+  only a post-shaped LinkedIn URL or `lnkd.in/p/` short link from the result.
+  The bridge never logs, stores, or transmits clipboard text, and the listener
+  is removed when resolution finishes or times out (2 seconds).
+- `background.js` owns submission through authenticated `POST /add_sync`,
+  badges, the capped 100-item retry queue with its 15-minute alarm, and a
+  persistent five-result history. Before POSTing it resolves a post-shaped
+  `lnkd.in/p/<code>` short link by following the redirect and submits the final
+  direct `linkedin.com` post URL.
+
+LinkedIn feed and container URLs are never valid item identities. A feed
+toolbar or page action is refused with a visible instruction to paste a
+permalink. A `linkedin.com/safety/go/?url=` wrapper is decoded first; if it
+decodes to a bare, non-redirecting `lnkd.in/<code>`, the containing post
+permalink is used when one can be determined, otherwise the capture is refused
+instead of poisoning dedupe. A bare non-post short link is never treated as a
+saved content item.
+
+Settings still live only in `chrome.storage.local`. A fresh install stores no
+server default. The guarded `migratedFromSync` migration, unconditional sync
+purge, 15-minute alarm, 100-item queue cap, bearer header, and 20,000-character
+browser-content cap remain in place.
+
 ### v0.4 additions (2026-07-19)
 
 **extractors.py** (new): source-aware extraction registry, imported by server.py.

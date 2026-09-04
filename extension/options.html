@@ -2,27 +2,29 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Content Digest Capture — Settings</title>
+<title>Content Digest Capture Settings</title>
 <style>
-  body { font-family: 'Montserrat', -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; max-width: 520px; margin: 40px auto; padding: 0 20px; }
+  body { font: 13px -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; max-width: 520px; margin: 40px auto; padding: 0 20px; }
   h1 { color: #b17e51; font-size: 20px; }
-  label { display: block; margin: 18px 0 6px; font-size: 13px; color: #aaa; }
-  input { width: 100%; box-sizing: border-box; background: #1e1e1e; border: 1px solid #333; color: #e0e0e0; padding: 9px 12px; border-radius: 8px; font-size: 13px; outline: none; }
+  label { display: block; margin: 18px 0 6px; color: #aaa; }
+  input { width: 100%; box-sizing: border-box; background: #1e1e1e; border: 1px solid #333; color: #e0e0e0; padding: 9px 12px; border-radius: 8px; }
   input:focus { border-color: #b17e51; }
-  button { margin-top: 20px; background: #b17e51; border: none; color: #000; padding: 10px 22px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; }
-  #status { margin-left: 12px; font-size: 13px; color: #22c55e; }
-  .hint { font-size: 11px; color: #666; margin-top: 4px; }
+  button { margin: 20px 8px 0 0; background: #b17e51; border: 0; color: #000; padding: 10px 18px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+  button.secondary { background: #475569; color: #fff; }
+  #status { display: block; min-height: 20px; margin-top: 14px; }
+  .hint { font-size: 11px; color: #777; margin-top: 4px; }
 </style>
 </head>
 <body>
 <h1>Content Digest Capture</h1>
 <label for="server">Server URL</label>
-<input type="text" id="server" placeholder="http://localhost:7778">
-<div class="hint">Your Content Digest server. Include the port. Use your always-on Mac's IP if the server runs on another machine.</div>
+<input type="url" id="server" placeholder="http://localhost:7778">
+<div class="hint">Leave empty until you deliberately configure the server. Include the port.</div>
 <label for="token">Auth token</label>
 <input type="password" id="token" placeholder="Bearer token from secrets.json">
-<div class="hint">Same auth_token value as in ~/content-digest-app/secrets.json on the server.</div>
-<button id="save">Save</button><span id="status"></span>
+<div class="hint">Stored only in this Chrome profile, never in Chrome sync.</div>
+<button id="save">Save</button><button id="test" class="secondary">Test connection</button>
+<span id="status" role="status"></span>
 <script src="options.js"></script>
 </body>
 </html>

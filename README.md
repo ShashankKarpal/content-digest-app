@@ -34,7 +34,7 @@
 
 - **Menu bar capture.** Click the icon, paste a URL, get a summary in seconds.
 - **iPhone share sheet.** A Shortcut posts to the server's authenticated endpoint.
-- **Chrome extension.** One click sends rendered page text, so logged-in-only pages such as Reddit and LinkedIn work.
+- **Chrome extension.** Click the icon, paste the exact URL, send. The popup reports honestly whether the item was saved, already saved, queued for retry, refused, or failed, and links straight to the knowledge base. Saving the current page with its rendered text (for logged-in-only pages such as Reddit and LinkedIn) and right-click capture remain as optional conveniences.
 - **Inbox capture before auth.** URLs are logged to `inbox.json` before the auth check so a rejected request is still visible for review, but only authenticated entries are ever re-queued for processing.
 - **Self-healing capture.** Fetch failures retry every 6 hours up to 3 attempts; inbox URLs that never became items are re-queued.
 - **URL normalization.** Tracking parameters (`utm_*`, `fbclid`, `share_id`, `si`) are stripped before dedupe and storage.
@@ -135,7 +135,7 @@ Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote acc
 - Headers: `Authorization: Bearer YOUR_AUTH_TOKEN`
 - Body: JSON with key `url`
 
-**Chrome extension.** Open `chrome://extensions`, enable Developer mode, Load unpacked, select `extension/`. Set your server URL and auth token in the extension options. Upgrading from 0.5.0 or earlier: 0.5.1 moves your existing server URL and token out of Chrome's synced storage into this browser profile on first load and clears the synced copy, so there is nothing to re-enter.
+**Chrome extension.** Open `chrome://extensions`, enable Developer mode, Load unpacked, select `extension/`. Set your server URL and auth token in the extension options, then use Test connection. Clicking the toolbar icon opens a popup with an empty URL field: paste the exact URL you want summarized and click Send to Content Digest. The popup immediately says the item was sent and Content Digest is working on it, then reports the real outcome: saved, already saved, queued for retry (server unreachable or token rejected; nothing is discarded), refused, or failed. The summary normally appears in Content Digest within about a minute, depending on the server. Open Content Digest jumps to the knowledge base. Save current page and the right-click Save to Content Digest menu are optional conveniences; on LinkedIn the right-click path uses LinkedIn's own Copy link to post action to find the post permalink. Feed and container pages such as `linkedin.com/feed/` are refused rather than saved as items. Upgrades preserve the existing local settings and keep the one-time 0.5.1 purge of Chrome's synced copy.
 
 ## Project structure
 
@@ -198,7 +198,7 @@ To ship: commit and push to GitHub from the dev machine. Never edit code on the 
 - A local model, or the Groq fallback, must be reachable for summarization.
 - The Mac address changes across networks; update the iPhone shortcut if capture stops working.
 - YouTube videos without transcripts hit the fetch failure guard rather than guessing from the title.
-- LinkedIn saved-post harvesting is not built; the Chrome extension covers individual pages.
+- LinkedIn saved-post harvesting is not built; the Chrome extension captures one post at a time by right-click or pasted permalink.
 - No TLS; see Network exposure above.
 
 ## Privacy

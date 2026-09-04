@@ -137,3 +137,58 @@ Fix, in `background.js` `chrome.runtime.onInstalled`:
 - Wrapped in try/catch at every step: an unreadable or empty sync store still sets the guard and still attempts the clear, and the listener never throws. One console line per path taken.
 
 Manifest bumped to 0.5.1. The options-page comment no longer tells the user to re-enter the token by hand, and the README upgrade note matches. Verified by `node --check` on both JS files, `json.tool` on the manifest, and a walkthrough of fresh install / upgrade-with-sync-token / upgrade-where-a-token-was-already-typed.
+
+## 2026-09-03: extension 0.6 capture rewrite, paste-first popup
+
+- Replaced automatic toolbar submission with a popup. The URL field opens
+  empty; the user pastes the exact URL and clicks Send to Content Digest. The
+  popup shows a working state, then the honest outcome (saved, already saved,
+  queued, refused, failed), plus Save current page, Open Content Digest,
+  Settings, a collapsed recent-activity list, and the retry queue count.
+  Manual paste is the primary workflow; page and right-click capture are
+  optional conveniences.
+- Added right-click target capture in `content.js`. LinkedIn posts resolve from
+  a post permalink or `urn:li:activity` ancestor when present. Because the
+  current LinkedIn markup exposed neither for real posts, a narrow main-world
+  bridge (`bridge.js`, LinkedIn only) observes LinkedIn's own Copy link to post
+  action during an explicit post resolution. Feed containers are refused when
+  no item identity can be proven.
+- Added extension-side wrapper decoding (LinkedIn safety/go, Google, Facebook,
+  Reddit, href.li, away.vk.com). A safety wrapper that yields a bare
+  `lnkd.in/<code>` uses the containing post identity or is refused. Post-shaped
+  `lnkd.in/p/<code>` links are resolved in the extension to the direct
+  `linkedin.com` permalink before POSTing.
+- Moved extension submissions to `/add_sync`, with distinct saved, duplicate,
+  failed, invalid, configuration, and queued feedback. Authentication and
+  network failures now enter the existing 15-minute queue instead of vanishing.
+- Fresh installs no longer materialize a fake localhost setting. Existing
+  local values and the guarded sync purge are preserved; manifest bumped to
+  0.6.0 so the update event runs. Options gained Test connection (`GET
+  /health`, then authenticated `GET /failures`).
+- Automated: `node tests/extension_acceptance.test.js` passed 46 assertions at
+  handoff, then 62 after fixtures were added for the two refusal paths that
+  correspond to the real feed right-click and safety-wrapper captures, plus
+  static guards on the bridge (LinkedIn only, MAIN world, no logging, storage,
+  or network) and the content script (single scoped listener, removed on
+  finish). All extension JS files passed `node --check`; the manifest passed
+  `python3 -m json.tool`; `git diff --check` passed; `server.py`,
+  `extractors.py`, `client.py`, `daily_brief.py`, `.gitleaks.toml`, and the
+  gitleaks workflow are unchanged.
+- Live on the M4 (Chrome, unpacked): version 0.6.0 was reloaded. The popup was
+  visually verified: empty URL field, Send to Content Digest, Save current
+  page, Open Content Digest, Settings, Ready status, and the existing retry
+  queue count. A real LinkedIn short post URL pasted into the popup showed the
+  working state, was resolved, reached the server as the direct linkedin.com
+  post URL with valid authentication, and the server honestly reported that it
+  already existed (the same post was already saved). Earlier in the day a
+  toolbar capture of the LinkedIn feed itself was refused, and after the
+  resolver correction a right-click on a real post used LinkedIn's own Copy
+  link to post action and reached the server through the normal authenticated
+  path. Open Content Digest was not clicked in the final run because it
+  performs the one-time authenticated view handoff.
+- Not tested live (owner approval needed, destructive or state-changing):
+  wrong or removed token, changed server address, clean-profile
+  uninstall/reinstall migration, deleting the historical `/feed/` item. These
+  paths have automated coverage only. The historical `/feed/` knowledge item
+  and the roughly three queued captures in extension storage were left intact.
+- No commit and no push had occurred at handoff.
