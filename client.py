@@ -186,13 +186,11 @@ class ContentDigestClient(rumps.App):
             notify("Content Digest", "Error", f"Could not reach server: {e}")
 
     def view_kb(self, _):
-        # First open carries the token once; the server swaps it for a session
-        # cookie and redirects to a clean /view URL.
-        if AUTH_TOKEN:
-            from urllib.parse import quote
-            webbrowser.open(f"{SERVER}/view?token={quote(AUTH_TOKEN)}")
-        else:
-            webbrowser.open(f"{SERVER}/view")
+        # Plain /view: the session cookie does the work after the first unlock.
+        # The token used to ride in this URL on every click and so sat in the
+        # browser history; a browser that is not yet unlocked now gets the
+        # server's Locked page and asks for the token once (audit A5, 2026-09-05).
+        webbrowser.open(f"{SERVER}/view")
 
     def quit_app(self, _):
         rumps.quit_application()

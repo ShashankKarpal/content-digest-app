@@ -40,6 +40,7 @@ except Exception:
 VALID_CATEGORIES = {"Work", "Learning", "Entertainment", "News", "Ideas"}
 VALID_STATES = {"act", "revisit", "archive", ""}
 RETRY_INTERVAL_HOURS = 6
+RETRY_FIRST_SWEEP_SECONDS = 600
 MAX_AUTO_RETRIES = 3
 
 # Auto-archive decay (feature 3): untouched items age out of the active view.
@@ -59,7 +60,9 @@ STATE_SOURCES = {"triage-link", "deck", "view", "api", "decay"}
 # unauthenticated requests and /health polls never count). The brief and the
 # menu bar client read these to tell a quiet week from a dead capture path.
 SERVER_VERSION = "0.5"
-STARTED_AT = datetime.now(timezone(timedelta(hours=4))).isoformat()
+# One timezone for every timestamp the server writes (the host runs in +04).
+TZ = timezone(timedelta(hours=4))
+STARTED_AT = datetime.now(TZ).isoformat()
 HEARTBEAT_FILE = BASE_DIR / "heartbeat.json"
 CLIENTS_FILE = BASE_DIR / "clients.json"
 HEARTBEAT_SECONDS = 300
@@ -622,7 +625,7 @@ def _record_inbox(url, authed=False):
     entries, otherwise the pre-auth capture was an unauthenticated write path
     into the whole pipeline (audit 2026-09-02). Capped so a chatty peer
     cannot grow the file without bound."""
-    now = datetime.now(timezone(timedelta(hours=4))).isoformat()
+    now = datetime.now(TZ).isoformat()
     try:
         inbox = json.loads(INBOX_FILE.read_text()) if INBOX_FILE.exists() else {"items": []}
     except Exception:
@@ -636,7 +639,7 @@ def _record_inbox(url, authed=False):
 
 
 def _record_failure(url, error_type, error_reason):
-    now = datetime.now(timezone(timedelta(hours=4))).isoformat()
+    now = datetime.now(TZ).isoformat()
     failures = _load_failures()
     existing = next((f for f in failures["items"] if f["url"] == url), None)
     if existing:
@@ -748,7 +751,7 @@ def process_url(url, content=None):
                 "tags": analysis["tags"],
                 "relevance": analysis["relevance"],
                 "state": "",
-                "saved_at": datetime.now(timezone(timedelta(hours=4))).isoformat(),
+                "saved_at": datetime.now(TZ).isoformat(),
             }
             with data_lock:
                 fresh = _load_data()
@@ -791,7 +794,7 @@ def _touch_client(name):
     """Record an authenticated contact from `name` (an allowlisted X-Client
     value, else 'api'). Never raises."""
     name = name if name in KNOWN_CLIENTS else "api"
-    now = datetime.now(timezone(timedelta(hours=4))).isoformat()
+    now = datetime.now(TZ).isoformat()
     try:
         with clients_lock:
             clients = _load_clients()
@@ -807,7 +810,7 @@ def heartbeat_loop():
     while True:
         try:
             _write_json_atomic(HEARTBEAT_FILE, {
-                "at": datetime.now(timezone(timedelta(hours=4))).isoformat(),
+                "at": datetime.now(TZ).isoformat(),
                 "started_at": STARTED_AT, "version": SERVER_VERSION, "pid": os.getpid()})
         except Exception as e:
             print(f"[heartbeat] write failed: {type(e).__name__}: {e}")
@@ -838,7 +841,7 @@ def health_snapshot():
 def _log_state_change(url, old_state, new_state, source, now=None):
     """Append one line to triage_log.jsonl. Never raises: the log is an
     instrument, and losing a line must not fail the user's action."""
-    now = now or datetime.now(timezone(timedelta(hours=4)))
+    now = now or datetime.now(TZ)
     entry = {"at": now.isoformat(), "url": url, "from": old_state or "",
              "to": new_state, "source": source if source in STATE_SOURCES else "api"}
     try:
@@ -859,7 +862,7 @@ def get_deck(limit=DECK_MAX):
     """Triage deck contents: same scorer and fatigue ledger as the brief, so
     items the 07:00 brief resurfaced today are on cooldown and never reappear
     in the same day's deck."""
-    now = datetime.now(timezone(timedelta(hours=4)))
+    now = datetime.now(TZ)
     return pick_resurfaced(_load_data()["items"], _load_resurface(), now, limit=limit)
 
 
@@ -867,7 +870,7 @@ def record_deck_skip(url):
     """A skipped deck card counts as a resurfacing with no response: it stamps
     the cooldown (tomorrow's brief will not repeat it) and adds a strike
     toward auto-archive."""
-    now = datetime.now(timezone(timedelta(hours=4)))
+    now = datetime.now(TZ)
     with resurface_lock:
         resurface = _load_resurface()
         r = resurface.setdefault(url, {"count": 0})
@@ -890,7 +893,7 @@ def decay_sweep():
     """Feature 3: auto-archive untouched items past their TTL, and items the
     brief resurfaced RESURFACE_STRIKES times with no response. Runs at startup
     and every retry cycle. Sets auto_archived_at so the brief can report it."""
-    now = datetime.now(timezone(timedelta(hours=4)))
+    now = datetime.now(TZ)
     try:
         resurface = json.loads(RESURFACE_FILE.read_text()) if RESURFACE_FILE.exists() else {}
     except Exception:
@@ -910,7 +913,7 @@ def decay_sweep():
                 except (ValueError, TypeError):
                     continue
                 if saved.tzinfo is None:
-                    saved = saved.replace(tzinfo=timezone(timedelta(hours=4)))
+                    saved = saved.replace(tzinfo=TZ)
                 ttl = DECAY_TTL_DAYS.get(item.get("category"), DECAY_TTL_DEFAULT_DAYS)
                 if (now - saved).days >= ttl:
                     reason = f"untouched past {ttl}d TTL"
@@ -937,7 +940,7 @@ def set_item_state(url, state, source="api"):
         return False
     if source not in STATE_SOURCES:
         source = "api"
-    now = datetime.now(timezone(timedelta(hours=4)))
+    now = datetime.now(TZ)
     with data_lock:
         data = _load_data()
         found = False
@@ -970,7 +973,7 @@ def _reconcile_inbox():
         return []
     saved = {i["url"] for i in _load_data()["items"]}
     failed = {f["url"] for f in _load_failures()["items"]}
-    cutoff = datetime.now(timezone(timedelta(hours=4))) - timedelta(minutes=30)
+    cutoff = datetime.now(TZ) - timedelta(minutes=30)
     orphans = []
     for entry in inbox["items"]:
         if not entry.get("authed"):
@@ -989,10 +992,15 @@ def _reconcile_inbox():
 
 
 def retry_loop():
-    """Every RETRY_INTERVAL_HOURS: retry fetch failures (max MAX_AUTO_RETRIES)
-    and re-queue orphaned inbox URLs. Makes capture fire-and-forget."""
+    """First sweep RETRY_FIRST_SWEEP_SECONDS after start, then every
+    RETRY_INTERVAL_HOURS: retry fetch failures (max MAX_AUTO_RETRIES) and
+    re-queue orphaned inbox URLs. Makes capture fire-and-forget. The short
+    first delay matters because every deploy restarts the server: with a 6 h
+    first sleep, a day with three deploys never swept at all (2026-09-04)."""
+    delay = RETRY_FIRST_SWEEP_SECONDS
     while True:
-        time.sleep(RETRY_INTERVAL_HOURS * 3600)
+        time.sleep(delay)
+        delay = RETRY_INTERVAL_HOURS * 3600
         try:
             decay_sweep()
             retryable = [
@@ -1001,8 +1009,7 @@ def retry_loop():
             ][:10]
             orphans = _reconcile_inbox()
             queue = retryable + [u for u in orphans if u not in retryable]
-            if queue:
-                print(f"[retry] Sweep: {len(retryable)} failure(s), {len(orphans)} inbox orphan(s)")
+            print(f"[retry] Sweep: {len(retryable)} failure(s), {len(orphans)} inbox orphan(s)", flush=True)
             for url in queue:
                 process_url(url)
                 time.sleep(20)

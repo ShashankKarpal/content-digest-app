@@ -251,3 +251,20 @@ by the user, days late, because nothing watched the path. Now:
 - README: Shortcut recipe gains the header and a Show Result step; deploy
   interval corrected to the measured 15 minutes (plist changed 2026-08-18,
   every doc still said 5).
+
+## 2026-09-05: small debts from the fleet audit, one commit (kk2 Cowork)
+
+Behaviour-neutral for the loop; nothing the measurement can see.
+
+- `client.py`: View Knowledge Base opens plain `/view` (audit A5). The token no
+  longer lands in browser history on every click; a browser that has not been
+  unlocked gets the Locked page and asks once.
+- `server.py`: one `TZ` constant replaces 13 inline `timezone(timedelta(hours=4))`
+  constructions (audit B9). `retry_loop` sweeps 10 minutes after start and then
+  every 6 hours; the first sleep used to be 6 hours, and because every deploy
+  restarts the server, a day with three deploys (2026-09-04) never swept once.
+  The sweep now logs one line every time it runs, even when nothing is queued.
+- README: `local_settings.py` is client-only (an `OLLAMA_URL` there is dead,
+  audit B2); `config.json` keys named, the brief time belongs to the LaunchAgent
+  (the unread `send_hour_dubai` and `send_minute_dubai` keys, audit B3, stay in
+  the host's file until the owner removes them; not edited on the host).

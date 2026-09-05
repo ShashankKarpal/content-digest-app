@@ -116,15 +116,15 @@ Copy `secrets.example.json` to `secrets.json` and fill it in. `secrets.json` and
 }
 ```
 
-Set the server address in `local_settings.py` (also gitignored). Never commit a LAN, tailnet, or VPN address.
+Set the server address in `local_settings.py` (also gitignored) as `SERVER = "http://..."`. That file is read by the menu bar client only; the server ignores it, so an `OLLAMA_URL` there does nothing (Ollama is always `localhost:11434` on the machine that runs `server.py`). Never commit a LAN, tailnet, or VPN address.
 
-The daily brief reads SMTP settings from `config.json` (gitignored). Set `server_base` there (for example your machine's tailnet address, `http://100.x.y.z:7778`) so the brief's one-tap triage links point at the server. **Tailnet dependency:** triage links are plain HTTP to that address and are HMAC-signed with a 72-hour expiry, but the tap only works from a device that can reach the server, meaning the same tailnet (Tailscale) or home LAN. On any other network the link times out; the item stays put and resurfaces again.
+The daily brief reads SMTP settings from `config.json` (gitignored): `smtp_user`, `smtp_password`, `recipient`, `server_base`. Any other key is ignored; the send time is set by the LaunchAgent that runs `daily_brief.py`, not by the file. Set `server_base` there (for example your machine's tailnet address, `http://100.x.y.z:7778`) so the brief's one-tap triage links point at the server. **Tailnet dependency:** triage links are plain HTTP to that address and are HMAC-signed with a 72-hour expiry, but the tap only works from a device that can reach the server, meaning the same tailnet (Tailscale) or home LAN. On any other network the link times out; the item stays put and resurfaces again.
 
 Real credentials live only on local machines. Nothing in this repository holds a working secret.
 
 ## Network exposure
 
-The server binds `0.0.0.0:7778` but refuses any connection that does not come from loopback, an RFC1918 private range, or the Tailscale CGNAT block (100.64/10). Every POST endpoint, including `/delete`, `/state`, and `/ask`, requires the bearer token or a valid session cookie, and the knowledge base at `/view` is locked behind a one-time `/view?token=YOUR_AUTH_TOKEN` unlock per browser (it sets a year-long session cookie; the token itself is never stored in the browser). Placeholder token values are treated as no token at all: the server rejects everything until a real random token is set.
+The server binds `0.0.0.0:7778` but refuses any connection that does not come from loopback, an RFC1918 private range, or the Tailscale CGNAT block (100.64/10). Every POST endpoint, including `/delete`, `/state`, and `/ask`, requires the bearer token or a valid session cookie, and the knowledge base at `/view` is locked behind a one-time unlock per browser: the Locked page asks for the token once and sets a year-long session cookie (the token itself is never stored in the browser, and since 2026-09-05 the menu bar client opens plain `/view` rather than putting the token in the URL). Placeholder token values are treated as no token at all: the server rejects everything until a real random token is set.
 
 Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote access. There is no TLS; on a hostile local network, traffic is readable in transit.
 
