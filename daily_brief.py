@@ -25,6 +25,9 @@ RESURFACE_FILE = APP_DIR / "resurface.json"
 LAST_RENDER_FILE = APP_DIR / "brief_last.html"
 TRIAGE_LOG_FILE = APP_DIR / "triage_log.jsonl"       # written by server.py, one line per state change
 LOOPCHECK_FILE = APP_DIR / "loopcheck-history.txt"   # one row per weekly rollup
+CLIENTS_FILE = APP_DIR / "clients.json"              # written by server.py: last authenticated contact per client
+HOST_HEALTH_STALE_HOURS = 48                         # brief warns when saves or client contact stop for this long
+CONTACT_WINDOW_HOURS = 24                            # a resurfacing only counts as a strike if a client reached the server today
 
 DUBAI_OFFSET = timezone(timedelta(hours=4))
 
@@ -191,14 +194,71 @@ def aged_out_last_24h(items, now):
     return out
 
 
-def save_resurface(resurface, picked, now):
+def save_resurface(resurface, picked, now, strike=True):
+    """Stamp the cooldown for every resurfaced item. A strike toward
+    auto-archive is added only when `strike` is true: the brief passes False
+    on a day when no client reached the server, because a resurfacing the
+    user could not have answered is not an ignored one (D1, C10)."""
     for it in picked:
         r = resurface.setdefault(it["url"], {"count": 0})
-        r["count"] = r.get("count", 0) + 1
+        if strike:
+            r["count"] = r.get("count", 0) + 1
         r["last"] = now.isoformat()
     tmp = RESURFACE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(resurface, indent=2))
     tmp.rename(RESURFACE_FILE)
+
+
+# --- Host health (D1): the brief tells you when the loop is silently dead ----
+
+def load_clients():
+    try:
+        return json.loads(CLIENTS_FILE.read_text()) if CLIENTS_FILE.exists() else {}
+    except Exception:
+        return {}
+
+
+def _latest(timestamps):
+    best = None
+    for value in timestamps:
+        t = _parse_iso(value) if isinstance(value, str) else None
+        if t is not None and (best is None or t > best):
+            best = t
+    return best
+
+
+def had_client_contact(clients, now, hours=CONTACT_WINDOW_HOURS):
+    """True when any client made an authenticated request within `hours`."""
+    last = _latest(clients.values()) if isinstance(clients, dict) else None
+    return last is not None and (now - last) <= timedelta(hours=hours)
+
+
+def host_health(items, clients, now, stale_hours=HOST_HEALTH_STALE_HOURS):
+    """Hours since the last save and the last authenticated client contact.
+    Stale when either gap reaches `stale_hours` (or has never happened)."""
+    last_save = _latest(i.get("saved_at") for i in items if isinstance(i, dict))
+    last_contact = _latest(clients.values()) if isinstance(clients, dict) else None
+    save_gap = int((now - last_save).total_seconds() // 3600) if last_save else None
+    contact_gap = int((now - last_contact).total_seconds() // 3600) if last_contact else None
+    stale = (save_gap is None or save_gap >= stale_hours
+             or contact_gap is None or contact_gap >= stale_hours)
+    return {"last_save_at": last_save.isoformat() if last_save else None,
+            "last_contact_at": last_contact.isoformat() if last_contact else None,
+            "save_gap_hours": save_gap, "contact_gap_hours": contact_gap, "stale": stale}
+
+
+def format_host_health_line(hh):
+    """One warning line for the brief, empty when healthy."""
+    import html as html_mod
+    if not hh.get("stale"):
+        return ""
+    def gap(h):
+        return "never" if h is None else f"{h} h ago"
+    text = (f"Host health: last save {gap(hh['save_gap_hours'])}, "
+            f"last client contact {gap(hh['contact_gap_hours'])}. "
+            f"If you have been saving links, the capture path is down: check the phone and the Mac are on the private network.")
+    return (f'<div style="font-size:12px;color:#F59E0B;font-family:Arial,sans-serif;'
+            f'margin-top:10px;">{html_mod.escape(text)}</div>')
 
 
 # --- Weekly act-rate rollup (D6): the measurement instrument -----------------
@@ -622,6 +682,19 @@ def main():
         aged = aged_out_last_24h(all_items, send_date)
         resurfaced_html = format_resurfaced_section(picked, base, token, send_date)
 
+        # Host health (D1): warn when saves or client contact have stopped, and
+        # withhold strikes on a day no client could have answered.
+        clients = load_clients()
+        contact_today = had_client_contact(clients, send_date)
+        health_html = ""
+        try:
+            hh = host_health(all_items, clients, send_date)
+            health_html = format_host_health_line(hh)
+            if hh["stale"]:
+                log(f"Host health stale: save gap {hh['save_gap_hours']} h, contact gap {hh['contact_gap_hours']} h.")
+        except Exception as e:
+            log(f"Host health skipped: {type(e).__name__}: {e}")
+
         # Monday: the weekly loop check rides the brief. A rollup failure must
         # never stop the brief, so it is fenced off on its own.
         loop_html, loop_row = "", None
@@ -641,10 +714,10 @@ def main():
             subject = f"Content Digest, {send_date.strftime('%A %B %d')}: " + ", ".join(parts)
             body = format_email_body(grouped, send_date,
                                      resurfaced_html=resurfaced_html,
-                                     aged_count=len(aged), loop_html=loop_html)
+                                     aged_count=len(aged), loop_html=health_html + loop_html)
         else:
             subject = f"Content Digest, {send_date.strftime('%A %B %d')}: no new saves"
-            body = format_empty_email_body(send_date, len(all_items), loop_html=loop_html)
+            body = format_empty_email_body(send_date, len(all_items), loop_html=health_html + loop_html)
 
         try:
             LAST_RENDER_FILE.write_text(body)
@@ -660,7 +733,9 @@ def main():
 
         send_email(config, subject, body)
         if picked:
-            save_resurface(resurface, picked, send_date)
+            save_resurface(resurface, picked, send_date, strike=contact_today)
+            if not contact_today:
+                log("No client contact in the last 24 h: cooldown stamped, no strikes added.")
         log(f"Sent brief with {len(recent)} items, {len(picked)} resurfaced, "
             f"{len(aged)} aged out, to {config['recipient']}.")
         if loop_row:

@@ -65,6 +65,7 @@
 - **Triage deck.** A Review button on the knowledge base opens one card at a time: Act, Later, Archive, or Skip, with keyboard shortcuts (a / l / x / space) and a completion state. Max 10 cards per run.
 - **Auto-archive decay.** Untouched items age out (News after 7 days, everything else after 21), and an item resurfaced 3 times with no response archives regardless. Reversible, and the brief reports the count.
 - **One fatigue ledger.** The brief and the deck share a scorer and a cooldown store, so the same item is never pushed at you twice in a day.
+- **Runtime watchdog.** The server writes `heartbeat.json` every 5 minutes and records the last authenticated contact per client (`X-Client` header) in `clients.json`; `/health` reports version, start time, last save, last client contact and the failure count, and the server log carries a content-free line per request (method, path, status, client; never the URL or a token). The brief adds a "Host health" warning when saves or client contact stop for 48 hours, and on a day when no client reached the server a resurfacing stamps the cooldown but adds no strike toward auto-archive, because a prompt you could not have seen is not one you ignored. The Mac menu bar client polls `/health` every 15 minutes with no credentials, shows the result in its menu, and after two consecutive misses posts one banner and puts a `!` beside its icon until the server answers again.
 - **Weekly loop check.** Every state change is stamped with when and where it happened (email tap, deck, knowledge base page, decay) and logged to `triage_log.jsonl`. The Monday brief carries a one-line "Loop this week" rollup and appends a dated row to `loopcheck-history.txt`; `python3 daily_brief.py --weekly [--dry-run]` prints the same row on demand. Days when capture or triage was known to be down are subtracted, so a flat week is never mistaken for behaviour.
 
 ### Daily brief
@@ -133,8 +134,9 @@ Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote acc
 
 - URL: `http://YOUR_MAC_IP:7778/add`
 - Method: POST
-- Headers: `Authorization: Bearer YOUR_AUTH_TOKEN`
+- Headers: `Authorization: Bearer YOUR_AUTH_TOKEN` and `X-Client: shortcut` (the second one lets the server count the phone as a live client; optional but recommended)
 - Body: JSON with key `url`
+- Optional but worth it: add a Show Result step after Get Contents of URL so a timeout fails loudly instead of silently.
 
 **Chrome extension.** Open `chrome://extensions`, enable Developer mode, Load unpacked, select `extension/`. Set your server URL and auth token in the extension options, then use Test connection. Clicking the toolbar icon opens a popup with an empty URL field: paste the exact URL you want summarized and click Send to Content Digest. The popup immediately says the item was sent and Content Digest is working on it, then reports the real outcome: saved, already saved, queued for retry (server unreachable or token rejected; nothing is discarded), refused, or failed. The summary normally appears in Content Digest within about a minute, depending on the server. Open Content Digest jumps to the knowledge base. Save current page and the right-click Save to Content Digest menu are optional conveniences; on LinkedIn the right-click path uses LinkedIn's own Copy link to post action to find the post permalink. Feed and container pages such as `linkedin.com/feed/` are refused rather than saved as items. Upgrades preserve the existing local settings and keep the one-time 0.5.1 purge of Chrome's synced copy.
 
@@ -190,7 +192,7 @@ screenshots/      UI screenshots
 
 ## Deployment
 
-The always-on M1 is the runtime host. It runs a git clone of this repo at `~/content-digest-app` plus an auto-deploy agent (`com.shashank.autodeploy`, every 5 minutes): fetch origin, hard-reset to the upstream branch on change, `py_compile` sanity check, then restart the server LaunchAgent. A failed compile logs to `~/autodeploy.log` and leaves the running service untouched.
+The always-on M1 is the runtime host. It runs a git clone of this repo at `~/content-digest-app` plus an auto-deploy agent (`com.shashank.autodeploy`, every 15 minutes since 2026-08-18; earlier docs said 5): fetch origin, hard-reset to the upstream branch on change, `py_compile` sanity check, then restart the server LaunchAgent. A failed compile logs to `~/autodeploy.log` and leaves the running service untouched. Any commit restarts the server, including documentation-only ones.
 
 To ship: commit and push to GitHub from the dev machine. Never edit code on the M1; the next deploy cycle overwrites it by design. Runtime data (`knowledge.json`, `secrets.json`, and friends) is gitignored and survives deploys.
 

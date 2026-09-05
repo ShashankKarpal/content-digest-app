@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import json
 import math
+import os
 import re
 import socket
 import sys
@@ -51,6 +52,18 @@ RESURFACE_FILE = BASE_DIR / "resurface.json"
 # date each change and name the surface that made it. Runtime data, gitignored.
 TRIAGE_LOG_FILE = BASE_DIR / "triage_log.jsonl"
 STATE_SOURCES = {"triage-link", "deck", "view", "api", "decay"}
+
+# D1 (2026-09-05): runtime watchdog. The server proves it is alive by writing
+# heartbeat.json every HEARTBEAT_SECONDS, and records the last authenticated
+# contact per client in clients.json (the X-Client header names the client;
+# unauthenticated requests and /health polls never count). The brief and the
+# menu bar client read these to tell a quiet week from a dead capture path.
+SERVER_VERSION = "0.5"
+STARTED_AT = datetime.now(timezone(timedelta(hours=4))).isoformat()
+HEARTBEAT_FILE = BASE_DIR / "heartbeat.json"
+CLIENTS_FILE = BASE_DIR / "clients.json"
+HEARTBEAT_SECONDS = 300
+KNOWN_CLIENTS = {"mac-client", "extension", "shortcut", "view", "triage-link", "brief"}
 DECAY_TTL_DAYS = {"News": 7}
 DECAY_TTL_DEFAULT_DAYS = 21
 RESURFACE_STRIKES = 3
@@ -758,6 +771,68 @@ def process_url(url, content=None):
 DECK_MAX = 10
 resurface_lock = threading.Lock()
 triage_log_lock = threading.Lock()
+clients_lock = threading.Lock()
+
+
+def _write_json_atomic(path, payload):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.rename(path)
+
+
+def _load_clients():
+    try:
+        return json.loads(CLIENTS_FILE.read_text()) if CLIENTS_FILE.exists() else {}
+    except Exception:
+        return {}
+
+
+def _touch_client(name):
+    """Record an authenticated contact from `name` (an allowlisted X-Client
+    value, else 'api'). Never raises."""
+    name = name if name in KNOWN_CLIENTS else "api"
+    now = datetime.now(timezone(timedelta(hours=4))).isoformat()
+    try:
+        with clients_lock:
+            clients = _load_clients()
+            clients[name] = now
+            _write_json_atomic(CLIENTS_FILE, clients)
+    except Exception as e:
+        print(f"[clients] write failed: {type(e).__name__}: {e}")
+
+
+def heartbeat_loop():
+    """Write heartbeat.json every HEARTBEAT_SECONDS. The file's own mtime is the
+    liveness signal; the body carries what a watcher needs to name the process."""
+    while True:
+        try:
+            _write_json_atomic(HEARTBEAT_FILE, {
+                "at": datetime.now(timezone(timedelta(hours=4))).isoformat(),
+                "started_at": STARTED_AT, "version": SERVER_VERSION, "pid": os.getpid()})
+        except Exception as e:
+            print(f"[heartbeat] write failed: {type(e).__name__}: {e}")
+        time.sleep(HEARTBEAT_SECONDS)
+
+
+def health_snapshot():
+    """The /health body: cheap, content-free, safe to poll every 15 minutes."""
+    last_save = None
+    try:
+        for item in _load_data().get("items", []):
+            ts = item.get("saved_at")
+            if ts and (last_save is None or ts > last_save):
+                last_save = ts
+    except Exception:
+        pass
+    clients = _load_clients()
+    last_contact = max(clients.values()) if clients else None
+    try:
+        failures = len(_load_failures().get("items", []))
+    except Exception:
+        failures = None
+    return {"ok": True, "processing": is_processing, "version": SERVER_VERSION,
+            "started_at": STARTED_AT, "last_save_at": last_save,
+            "last_client_contact_at": last_contact, "clients": clients, "failures": failures}
 
 
 def _log_state_change(url, old_state, new_state, source, now=None):
@@ -1440,6 +1515,14 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self):
         return self._bearer_ok() or self._cookie_ok()
 
+    def _note_contact(self):
+        """Call only after auth passed. Bearer callers name themselves with
+        X-Client (allowlisted, else 'api'); cookie callers are the /view page."""
+        if self._bearer_ok():
+            _touch_client(self.headers.get("X-Client", "").strip().lower() or "api")
+        else:
+            _touch_client("view")
+
     def _same_origin(self):
         origin = self.headers.get("Origin", "")
         site = self.headers.get("Sec-Fetch-Site", "")
@@ -1488,6 +1571,7 @@ class Handler(BaseHTTPRequestHandler):
                 code, msg = 404, "Item not found. It may have been deleted or merged."
             if code == 200:
                 msg = f"Done: marked <b style='color:#ff9f1c;'>{labels[state]}</b>."
+                _touch_client("triage-link")  # a valid signed tap proves the user can reach the server
             self.send_response(code)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
@@ -1519,6 +1603,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(LOCKED_HTML.encode())
                 return
+            _touch_client("view")
             try:
                 html = build_html(_load_data()["items"],
                                   deck_urls=[i["url"] for i in get_deck()])
@@ -1535,12 +1620,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "processing": is_processing}).encode())
+            self.wfile.write(json.dumps(health_snapshot()).encode())
             return
         if path == "/failures":
             if not self._authed():
                 self._deny()
                 return
+            self._note_contact()
             failures = _load_failures()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1632,6 +1718,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._bearer_ok() and not self._same_origin():
             self._deny(403, "Cross-origin request refused")
             return
+        self._note_contact()
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -1711,6 +1798,17 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def log_request(self, code="-", size="-"):
+        """Content-free request log: method, path without query, status, and
+        the X-Client header. Never the URL being saved, never a token. Health
+        polls and static assets are skipped so the log stays readable."""
+        path = self.path.split("?", 1)[0]
+        if path == "/health" or path.startswith("/assets/"):
+            return
+        client = self.headers.get("X-Client", "").strip().lower()
+        client = client if client in KNOWN_CLIENTS else ("other" if client else "-")
+        print(f"[req] {self.command} {path} {code} client={client}", flush=True)
+
 
 if __name__ == "__main__":
     BASE_DIR.mkdir(exist_ok=True)
@@ -1718,9 +1816,10 @@ if __name__ == "__main__":
     decay_sweep()
     threading.Thread(target=retry_loop, daemon=True).start()
     threading.Thread(target=backfill_embeddings, daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7778
     # ThreadingHTTPServer: a slow /ask or /add_sync must never block the
     # iPhone shortcut, the menu bar client, or the Chrome extension.
-    print(f"[server] Content Digest server v0.4 starting on 0.0.0.0:{port}")
+    print(f"[server] Content Digest server v{SERVER_VERSION} starting on 0.0.0.0:{port}", flush=True)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()

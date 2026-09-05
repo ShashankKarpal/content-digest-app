@@ -218,3 +218,36 @@ changed, so the 09-17 read could not tell an email tap from a deck action.
   host deploy list is unchanged.
 - Retires the external weekly SSH loop-check task once the first row is
   written on the host; that task failed exactly when the host was offline.
+
+## 2026-09-05: D1 runtime watchdog (kk2 Cowork)
+
+Second measurement instrument. The two capture outages in August were found
+by the user, days late, because nothing watched the path. Now:
+
+- `server.py`: `heartbeat.json` every 5 minutes (at, started_at, version, pid);
+  `clients.json` stamps the last authenticated contact per `X-Client`
+  (`mac-client`, `extension`, `shortcut`, `view`, `triage-link`, `brief`, else
+  `api`); a valid signed triage tap counts as contact, `/health` polls and
+  unauthenticated requests never do. `/health` now carries version,
+  started_at, last_save_at, last_client_contact_at, clients and the failure
+  count. A content-free request log (`[req] METHOD path status client=`) skips
+  `/health` and `/assets/`; the query string is dropped so `/triage` URLs stay
+  out of the log. `SERVER_VERSION` replaces the stale v0.4 banner.
+- `daily_brief.py`: "Host health" line when the last save or the last client
+  contact is 48 h or older (or has never happened); on a day with no client
+  contact in 24 h, `save_resurface(..., strike=False)` stamps the cooldown
+  without a strike (C10), so an outage cannot push items into auto-archive.
+- `client.py`: polls `/health` every 15 minutes with no credentials, shows the
+  result in a greyed menu row, posts one banner after two consecutive misses
+  and puts `!` beside the icon, posts one recovery banner. `CD_HEALTH_URL` and
+  `CD_HEALTH_POLL_SECONDS` exist for Terminal tests only. Live test against a
+  closed port then a fake server: miss 1, miss 2, alert, miss 3, recovered.
+  Quirk met on the way: the LaunchAgent's PYTHONHOME poisons any child Python
+  (the test harness had to `env -u` it; the client itself spawns none).
+- Extension 0.6.1: `X-Client: extension` on `/add_sync` and the options Test
+  connection; acceptance suite 64 assertions.
+- Tests: 18 unit tests in `tests/test_daily_brief_rollup.py`.
+- `.gitignore`: `heartbeat.json`, `clients.json`. No new runtime `.py`.
+- README: Shortcut recipe gains the header and a Show Result step; deploy
+  interval corrected to the measured 15 minutes (plist changed 2026-08-18,
+  every doc still said 5).

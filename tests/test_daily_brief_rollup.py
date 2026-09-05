@@ -162,5 +162,68 @@ class LogAndFileTests(unittest.TestCase):
         self.assertEqual(len(lines), 3)
 
 
+class HostHealthTests(unittest.TestCase):
+    def test_healthy_when_save_and_contact_are_recent(self):
+        items = [_item("https://a", saved_days_ago=1)]
+        clients = {"extension": (NOW - timedelta(hours=5)).isoformat()}
+        hh = db.host_health(items, clients, NOW)
+        self.assertFalse(hh["stale"])
+        self.assertEqual(hh["contact_gap_hours"], 5)
+        self.assertEqual(db.format_host_health_line(hh), "")
+
+    def test_stale_when_no_contact_for_48h(self):
+        items = [_item("https://a", saved_days_ago=1)]
+        clients = {"mac-client": (NOW - timedelta(hours=49)).isoformat()}
+        hh = db.host_health(items, clients, NOW)
+        self.assertTrue(hh["stale"])
+        line = db.format_host_health_line(hh)
+        self.assertIn("Host health", line)
+        self.assertIn("49", line)
+
+    def test_stale_when_no_save_for_48h_even_with_contact(self):
+        items = [_item("https://a", saved_days_ago=3)]
+        clients = {"extension": NOW.isoformat()}
+        hh = db.host_health(items, clients, NOW)
+        self.assertTrue(hh["stale"])
+        self.assertEqual(hh["save_gap_hours"], 72)
+
+    def test_missing_clients_file_is_never_seen(self):
+        hh = db.host_health([], {}, NOW)
+        self.assertIsNone(hh["last_contact_at"])
+        self.assertTrue(hh["stale"])
+        self.assertIn("never", db.format_host_health_line(hh))
+
+    def test_recent_contact_rule_for_strikes(self):
+        self.assertTrue(db.had_client_contact({"shortcut": (NOW - timedelta(hours=23)).isoformat()}, NOW))
+        self.assertFalse(db.had_client_contact({"shortcut": (NOW - timedelta(hours=25)).isoformat()}, NOW))
+        self.assertFalse(db.had_client_contact({}, NOW))
+        self.assertFalse(db.had_client_contact({"x": "garbage"}, NOW))
+
+
+class StrikeRuleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._old = db.RESURFACE_FILE
+        db.RESURFACE_FILE = Path(self.tmp.name) / "resurface.json"
+
+    def tearDown(self):
+        db.RESURFACE_FILE = self._old
+        self.tmp.cleanup()
+
+    def test_strike_added_when_user_had_contact(self):
+        picked = [_item("https://a")]
+        r = {}
+        db.save_resurface(r, picked, NOW, strike=True)
+        self.assertEqual(r["https://a"]["count"], 1)
+        self.assertEqual(json.loads(db.RESURFACE_FILE.read_text())["https://a"]["count"], 1)
+
+    def test_no_strike_but_cooldown_kept_on_zero_contact_day(self):
+        picked = [_item("https://a")]
+        r = {"https://a": {"count": 2, "last": "2026-08-30T07:00:00+04:00"}}
+        db.save_resurface(r, picked, NOW, strike=False)
+        self.assertEqual(r["https://a"]["count"], 2)        # unchanged: no chance to respond
+        self.assertEqual(r["https://a"]["last"], NOW.isoformat())  # cooldown still stamped
+
+
 if __name__ == "__main__":
     unittest.main()

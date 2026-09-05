@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Content Digest Capture",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Save pages, feed items, selections, and pasted permalinks to Content Digest with honest results.",
   "permissions": ["activeTab", "scripting", "storage", "contextMenus", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"],

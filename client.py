@@ -3,6 +3,7 @@
 
 import json
 import subprocess
+import time
 import urllib.request
 import webbrowser
 import rumps
@@ -13,6 +14,17 @@ try:
     from local_settings import SERVER
 except ImportError:
     SERVER = "http://127.0.0.1:7778"
+
+# D1 watchdog (2026-09-05): this client is the observer for the remote runtime.
+# It polls /health every HEALTH_POLL_SECONDS without credentials (so a poll
+# never counts as user contact on the server), posts ONE banner after
+# MISSES_BEFORE_ALERT consecutive misses, marks the menu bar item, and posts
+# one recovery banner when the server answers again. The two environment
+# variables exist so the behaviour can be exercised from a Terminal against a
+# closed port without touching the LaunchAgent.
+HEALTH_URL = os.environ.get("CD_HEALTH_URL") or f"{SERVER}/health"
+HEALTH_POLL_SECONDS = int(os.environ.get("CD_HEALTH_POLL_SECONDS") or 900)
+MISSES_BEFORE_ALERT = 2
 
 # Auth token lives in gitignored secrets.json, never hardcoded here.
 try:
@@ -87,12 +99,61 @@ class ContentDigestClient(rumps.App):
             super().__init__("Content Digest", icon=_icon, template=True, quit_button=None)
         else:
             super().__init__("📌", quit_button=None)
+        self.status_item = rumps.MenuItem("Server: not checked yet")
+        self.status_item.set_callback(None)
         self.menu = [
             rumps.MenuItem("Add URL...", callback=self.add_url),
             rumps.MenuItem("View Knowledge Base", callback=self.view_kb),
             None,
+            self.status_item,
+            None,
             rumps.MenuItem("Quit", callback=self.quit_app),
         ]
+        self.misses = 0
+        self.down_since = None
+        self.alerted = False
+        self.health_timer = rumps.Timer(self.check_health, HEALTH_POLL_SECONDS)
+        self.health_timer.start()
+
+    # --- watchdog -----------------------------------------------------------
+
+    def _probe(self):
+        """GET /health with no credentials. Returns (ok, detail)."""
+        try:
+            req = urllib.request.Request(HEALTH_URL, headers={"User-Agent": "content-digest-client"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode() or "{}")
+            return bool(body.get("ok")), body
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+
+    def check_health(self, _=None):
+        ok, detail = self._probe()
+        stamp = time.strftime("%H:%M")
+        if ok:
+            was_down = self.alerted
+            self.misses = 0
+            self.down_since = None
+            self.alerted = False
+            self.title = None  # clear the marker beside the icon
+            contact = (detail.get("last_client_contact_at") or "")[:16].replace("T", " ") if isinstance(detail, dict) else ""
+            self.status_item.title = f"Server: ok at {stamp}" + (f", last capture contact {contact}" if contact else "")
+            if was_down:
+                notify("Content Digest", "Server is back", f"Reachable again at {stamp}.")
+                print(f"watchdog: recovered at {stamp}", file=sys.stderr, flush=True)
+            return
+        self.misses += 1
+        self.down_since = self.down_since or stamp
+        self.status_item.title = f"Server: unreachable since {self.down_since} ({self.misses} checks)"
+        print(f"watchdog: miss {self.misses} at {stamp}: {detail}", file=sys.stderr, flush=True)
+        if self.misses >= MISSES_BEFORE_ALERT and not self.alerted:
+            self.alerted = True
+            self.title = "!"  # visible marker next to the menu bar icon, no new asset needed
+            minutes = (self.misses * HEALTH_POLL_SECONDS) // 60
+            print(f"watchdog: alert posted at {stamp} after {self.misses} misses", file=sys.stderr, flush=True)
+            notify("Content Digest", "Server unreachable",
+                   f"No answer for about {minutes} min ({self.misses} checks). "
+                   "If Tailscale is off on this Mac or the phone, saves are not arriving.")
 
     def add_url(self, _):
         script = '''tell application "System Events"
@@ -114,7 +175,8 @@ class ContentDigestClient(rumps.App):
                 data=body,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {AUTH_TOKEN}"
+                    "Authorization": f"Bearer {AUTH_TOKEN}",
+                    "X-Client": "mac-client",
                 }
             )
             with urllib.request.urlopen(req, timeout=15) as resp:

@@ -18,7 +18,7 @@ async function postAdd(payload) {
   if (!server.trim() || !token.trim()) throw new Error("CONFIG: Open Options and set the server URL and token.");
   const resp = await fetch(server.trim().replace(/\/$/, "") + "/add_sync", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token.trim() },
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token.trim(), "X-Client": "extension" },
     body: JSON.stringify(payload),
   });
   if (resp.status === 401 || resp.status === 403) throw new Error("AUTH: The server rejected the token.");

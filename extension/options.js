@@ -20,7 +20,7 @@ document.getElementById("test").addEventListener("click", async () => {
   try {
     const health = await fetch(base + "/health");
     if (!health.ok) throw new Error("Server health returned HTTP " + health.status + ".");
-    const check = await fetch(base + "/failures", { headers: { Authorization: "Bearer " + auth } });
+    const check = await fetch(base + "/failures", { headers: { Authorization: "Bearer " + auth, "X-Client": "extension" } });
     status.textContent = check.ok ? "Connected. Server and token are valid." : "Server reached, but the token was rejected (HTTP " + check.status + ").";
   } catch (error) {
     status.textContent = "Connection failed: " + error.message;

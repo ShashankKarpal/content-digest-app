@@ -48,6 +48,8 @@ docs/session-handoff.md
 resurface.json
 brief_last.html
 triage_log.jsonl
+heartbeat.json
+clients.json
 
 # --- secrets hygiene completion (audit 2026-07-30) ---
 .env.*

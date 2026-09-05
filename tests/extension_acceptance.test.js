@@ -88,6 +88,11 @@ function requestBody(index = -1) {
   return JSON.parse(fetches.at(index)[2].body);
 }
 
+function requestHeaders(index = -1) {
+  const fetches = calls.filter((call) => call[0] === "fetch");
+  return fetches.at(index)[2].headers || {};
+}
+
 async function run() {
   const CD = sandbox.CD;
   const popupHtml = fs.readFileSync(path.join(root, "extension/popup.html"), "utf8");
@@ -104,7 +109,7 @@ async function run() {
   assert.doesNotMatch(popupJs, /urlInput\.value\s*=\s*tab/, "the popup opens with an empty field ready for a pasted URL");
 
   assert.equal(manifest.manifest_version, 3, "manifest stays on MV3");
-  assert.equal(manifest.version, "0.6.0", "manifest version bumped so onInstalled update fires");
+  assert.equal(manifest.version, "0.6.1", "manifest version bumped so onInstalled update fires");
   assert.equal(manifest.action.default_popup, "popup.html", "the toolbar icon opens the popup");
   const bridgeScript = manifest.content_scripts.find((script) => script.js.includes("bridge.js"));
   assert.deepEqual(bridgeScript.matches, ["https://*.linkedin.com/*"], "the bridge is registered only on LinkedIn");
@@ -135,6 +140,8 @@ async function run() {
     : { ok: true, status: 200, json: async () => ({ status: "saved", url: post }) };
   await sandbox.submit({ url: "https://lnkd.in/p/evwG7VAv" }, 1);
   assert.equal(requestBody().url, post, "current LinkedIn copied links resolve to a proven direct permalink before POST");
+  assert.equal(requestHeaders()["X-Client"], "extension", "every server POST names the client so the runtime watchdog can count real contact");
+  assert.match(requestHeaders().Authorization || "", /^Bearer /, "the token still travels in the Authorization header, never in the body or URL");
 
   reset();
   let result = await sandbox.capturePage({ id: 1, url: feed });

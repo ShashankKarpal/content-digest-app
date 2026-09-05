@@ -1,5 +1,25 @@
 # docs/decision-log.md
 
+## 2026-09-05 | Runtime | The client is the observer, and silence is not a strike
+
+Context: Two August outages (menu bar client down for a week, phone off the
+private network for two days) were noticed by the user, late, while the brief
+kept sending and the backlog kept striking items that nobody could have seen.
+The machine-level morning check proved the boxes were up, not that the path
+worked.
+
+Decision: The server proves liveness (heartbeat file) and records real
+contact (clients file keyed by an allowlisted `X-Client` header, stamped only
+after authentication; a signed triage tap counts, a health poll never does).
+The Mac menu bar client is the observer because it is the surface the user is
+already looking at: two missed polls, one banner, a marker on the icon, one
+recovery banner. The brief carries a host-health warning and adds no strike on
+a day with zero client contact. The request log is content-free by design.
+
+Rejected: ntfy or any push relay (adds a third party and repeats the network
+failure class); logging URLs in the request log (the log would hold the
+reading list); polling with credentials (the observer would look like a user).
+
 ## 2026-09-05 | Measurement | State changes carry their date and their surface
 
 Context: The measurement phase asks whether the v0.5 loop moves act and archive
