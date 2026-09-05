@@ -192,3 +192,29 @@ Manifest bumped to 0.5.1. The options-page comment no longer tells the user to r
   paths have automated coverage only. The historical `/feed/` knowledge item
   and the roughly three queued captures in extension storage were left intact.
 - No commit and no push had occurred at handoff.
+
+## 2026-09-05: D6 weekly loop check, the measurement instrument (kk2 Cowork)
+
+Measurement phase, no product change. Live counts at start: 179 items, act 0,
+revisit 2, archive 147 (all by decay), 30 untouched; the server logged no
+requests and `set_item_state` recorded neither when nor from where a state
+changed, so the 09-17 read could not tell an email tap from a deck action.
+
+- `server.py`: `set_item_state(url, state, source)` stamps `state_changed_at`
+  and `state_source` on the item and appends one JSON line (at, url, from, to,
+  source) to `triage_log.jsonl`. Sources: `triage-link` (brief), `deck`,
+  `view` (knowledge base page), `api` (anything else), `decay` (auto-archive).
+  Deck skips log as `to: skip`. The page and deck send their source in the
+  `/state` body; it is allowlisted and only ever used for the log.
+- `daily_brief.py`: `weekly_rollup`, `format_loopcheck_row`,
+  `format_loop_line`, `append_loopcheck_row` (pure functions), plus
+  `--weekly [--dry-run]`. The Monday brief carries a "Loop this week" line and
+  appends a dated row to `loopcheck-history.txt` (once per date). Exclusion
+  windows and the 2026-08-17 baseline are constants; clean days are subtracted
+  in both the week and the since-baseline figures.
+- `tests/test_daily_brief_rollup.py`: 11 unit tests, stdlib only. A temp-dir
+  server run proved the three sources and the row end to end before commit.
+- `.gitignore`: `triage_log.jsonl` (runtime data). No new runtime `.py`, so the
+  host deploy list is unchanged.
+- Retires the external weekly SSH loop-check task once the first row is
+  written on the host; that task failed exactly when the host was offline.

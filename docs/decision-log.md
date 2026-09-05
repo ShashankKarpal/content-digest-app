@@ -1,5 +1,26 @@
 # docs/decision-log.md
 
+## 2026-09-05 | Measurement | State changes carry their date and their surface
+
+Context: The measurement phase asks whether the v0.5 loop moves act and archive
+at all, yet the server logged no requests and a state change left only the new
+value behind. The read on 2026-09-17 could not have dated a single change or
+said whether it came from the brief, the deck or the page. The external weekly
+count depended on SSH to the host and failed on the one day the host was down.
+
+Decision: Every state change is recorded on the item (`state_changed_at`,
+`state_source`) and appended to `triage_log.jsonl`; auto-archive logs as source
+`decay`, deck skips as `to: skip`. The weekly rollup lives inside
+`daily_brief.py`, runs on the host with the data, rides the Monday brief, and
+appends its own row to `loopcheck-history.txt`. Known outage windows are
+constants in code and are subtracted as excluded days, so the read is done on
+clean days only. This is an instrument, not a feature; it changes nothing the
+user sees except one line in the Monday email.
+
+Rejected: request logging with URLs (the log would hold everything the user
+saves); a separate LaunchAgent for the rollup (one more thing to deploy on the
+host for no gain); counting from current state alone (undatable).
+
 ## 2026-09-03 | Extension Capture | Item identity before ingestion, synchronous outcomes
 
 Context: Three authenticated LinkedIn captures reached the server but stored a

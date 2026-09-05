@@ -46,6 +46,11 @@ MAX_AUTO_RETRIES = 3
 # has resurfaced RESURFACE_STRIKES times with no response archives regardless
 # of age. Reversible: archived is a filter away, and the brief reports counts.
 RESURFACE_FILE = BASE_DIR / "resurface.json"
+# D6 (2026-09-05): every state change is appended here as one JSON line
+# (at, url, from, to, source) so the weekly loop check in daily_brief.py can
+# date each change and name the surface that made it. Runtime data, gitignored.
+TRIAGE_LOG_FILE = BASE_DIR / "triage_log.jsonl"
+STATE_SOURCES = {"triage-link", "deck", "view", "api", "decay"}
 DECAY_TTL_DAYS = {"News": 7}
 DECAY_TTL_DEFAULT_DAYS = 21
 RESURFACE_STRIKES = 3
@@ -752,6 +757,20 @@ def process_url(url, content=None):
 
 DECK_MAX = 10
 resurface_lock = threading.Lock()
+triage_log_lock = threading.Lock()
+
+
+def _log_state_change(url, old_state, new_state, source, now=None):
+    """Append one line to triage_log.jsonl. Never raises: the log is an
+    instrument, and losing a line must not fail the user's action."""
+    now = now or datetime.now(timezone(timedelta(hours=4)))
+    entry = {"at": now.isoformat(), "url": url, "from": old_state or "",
+             "to": new_state, "source": source if source in STATE_SOURCES else "api"}
+    try:
+        with triage_log_lock, open(TRIAGE_LOG_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"[triage-log] write failed: {type(e).__name__}: {e}")
 
 
 def _load_resurface():
@@ -782,6 +801,7 @@ def record_deck_skip(url):
         tmp = RESURFACE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(resurface, indent=2))
         tmp.rename(RESURFACE_FILE)
+    _log_state_change(url, "", "skip", "deck", now)
 
 
 def _sign_triage(url, state, expires):
@@ -822,7 +842,10 @@ def decay_sweep():
             if reason:
                 item["state"] = "archive"
                 item["auto_archived_at"] = now.isoformat()
+                item["state_changed_at"] = now.isoformat()
+                item["state_source"] = "decay"
                 archived += 1
+                _log_state_change(item["url"], "", "archive", "decay", now)
         if archived:
             _save_data(data)
             _write_html(build_html(data["items"]))
@@ -831,21 +854,32 @@ def decay_sweep():
     return archived
 
 
-def set_item_state(url, state):
-    """Set act / revisit / archive on a saved item."""
+def set_item_state(url, state, source="api"):
+    """Set act / revisit / archive on a saved item. `source` names the surface
+    that made the change (triage-link, deck, view, api) and is recorded on the
+    item and in triage_log.jsonl for the weekly loop check."""
     if state not in VALID_STATES:
         return False
+    if source not in STATE_SOURCES:
+        source = "api"
+    now = datetime.now(timezone(timedelta(hours=4)))
     with data_lock:
         data = _load_data()
         found = False
+        old_state = ""
         for item in data["items"]:
             if item["url"] == url:
+                old_state = item.get("state") or ""
                 item["state"] = state
+                item["state_changed_at"] = now.isoformat()
+                item["state_source"] = source
                 found = True
                 break
         if found:
             _save_data(data)
             _write_html(build_html(data["items"]))
+    if found:
+        _log_state_change(url, old_state, state, source, now)
     return found
 
 
@@ -1169,7 +1203,7 @@ function setState(btn, state) {{
   fetch("/state", {{
     method: "POST",
     headers: {{"Content-Type": "application/json"}},
-    body: JSON.stringify({{url: url, state: newState}})
+    body: JSON.stringify({{url: url, state: newState, source: "view"}})
   }}).catch(e => console.warn("State sync failed:", e));
   render();
 }}
@@ -1310,7 +1344,7 @@ function deckResolve(action) {{
     fetch("/state", {{
       method: "POST",
       headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{url: it.url, state: action}})
+      body: JSON.stringify({{url: it.url, state: action, source: "deck"}})
     }}).catch(e => console.warn("State sync failed:", e));
   }}
   deckPos++;
@@ -1450,7 +1484,7 @@ class Handler(BaseHTTPRequestHandler):
                 code, msg = 410, "This link has expired. Triage links are valid for 72 hours; use tomorrow's brief."
             elif not hmac.compare_digest(sig.encode(), _sign_triage(url, state, expires).encode()):
                 code, msg = 403, "Invalid link signature."
-            elif not set_item_state(url, state):
+            elif not set_item_state(url, state, source="triage-link"):
                 code, msg = 404, "Item not found. It may have been deleted or merged."
             if code == 200:
                 msg = f"Done: marked <b style='color:#ff9f1c;'>{labels[state]}</b>."
@@ -1633,7 +1667,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/state":
             url = body.get("url", "").strip()
             state = body.get("state", "").strip().lower()
-            ok = set_item_state(url, state)
+            # The page says which surface it is (view or deck); anything else
+            # is an API caller. Never trust it for auth, only for the log.
+            source = str(body.get("source", "")).strip().lower()
+            if source not in ("view", "deck"):
+                source = "api"
+            ok = set_item_state(url, state, source=source)
             self.wfile.write(json.dumps({"ok": ok}).encode())
             return
 

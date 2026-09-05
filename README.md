@@ -65,6 +65,7 @@
 - **Triage deck.** A Review button on the knowledge base opens one card at a time: Act, Later, Archive, or Skip, with keyboard shortcuts (a / l / x / space) and a completion state. Max 10 cards per run.
 - **Auto-archive decay.** Untouched items age out (News after 7 days, everything else after 21), and an item resurfaced 3 times with no response archives regardless. Reversible, and the brief reports the count.
 - **One fatigue ledger.** The brief and the deck share a scorer and a cooldown store, so the same item is never pushed at you twice in a day.
+- **Weekly loop check.** Every state change is stamped with when and where it happened (email tap, deck, knowledge base page, decay) and logged to `triage_log.jsonl`. The Monday brief carries a one-line "Loop this week" rollup and appends a dated row to `loopcheck-history.txt`; `python3 daily_brief.py --weekly [--dry-run]` prints the same row on demand. Days when capture or triage was known to be down are subtracted, so a flat week is never mistaken for behaviour.
 
 ### Daily brief
 

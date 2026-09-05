@@ -9,8 +9,8 @@ import hmac
 import json
 import smtplib
 import sys
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -23,8 +23,20 @@ LOG_FILE = APP_DIR / "daily_brief.log"
 SECRETS_FILE = APP_DIR / "secrets.json"
 RESURFACE_FILE = APP_DIR / "resurface.json"
 LAST_RENDER_FILE = APP_DIR / "brief_last.html"
+TRIAGE_LOG_FILE = APP_DIR / "triage_log.jsonl"       # written by server.py, one line per state change
+LOOPCHECK_FILE = APP_DIR / "loopcheck-history.txt"   # one row per weekly rollup
 
 DUBAI_OFFSET = timezone(timedelta(hours=4))
+
+# Measurement phase (D6, 2026-09-05). The weekly loop check compares against the
+# v0.5 baseline and subtracts days when capture or triage was known to be down,
+# so a flat week is never mistaken for user behaviour. Dates are inclusive.
+MEASUREMENT_BASELINE = date(2026, 8, 17)
+MEASUREMENT_EXCLUSIONS = (
+    (date(2026, 8, 16), date(2026, 8, 24)),   # menu bar client down
+    (date(2026, 8, 26), date(2026, 8, 28)),   # phone off the private network
+    (date(2026, 8, 31), date(2026, 8, 31)),   # server host offline
+)
 
 CATEGORY_ORDER = ["News", "Work", "Learning", "Ideas", "Entertainment"]
 
@@ -189,6 +201,152 @@ def save_resurface(resurface, picked, now):
     tmp.rename(RESURFACE_FILE)
 
 
+# --- Weekly act-rate rollup (D6): the measurement instrument -----------------
+# Week counts come from triage_log.jsonl (dated, with the surface that made the
+# change); cumulative counts come from the items' current state. Both are
+# pure functions of their inputs so they can be unit tested.
+
+def _parse_iso(value):
+    try:
+        t = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    return t.replace(tzinfo=DUBAI_OFFSET) if t.tzinfo is None else t
+
+
+def load_triage_log():
+    """Every well-formed line of triage_log.jsonl; bad lines are skipped."""
+    if not TRIAGE_LOG_FILE.exists():
+        return []
+    entries = []
+    for line in TRIAGE_LOG_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def _excluded_days(start, end):
+    """Number of days in [start, end] (inclusive dates) that fall inside a
+    measurement exclusion window."""
+    count = 0
+    for lo, hi in MEASUREMENT_EXCLUSIONS:
+        a, b = max(lo, start), min(hi, end)
+        if a <= b:
+            count += (b - a).days + 1
+    return count
+
+
+def weekly_rollup(items, log_entries, now, days=7):
+    """Counts for the trailing `days`, plus cumulative state, plus clean-day
+    arithmetic since the baseline. Returns a plain dict."""
+    cutoff = now - timedelta(days=days)
+    week = {"act": 0, "revisit": 0, "manual_archive": 0, "auto_archived": 0,
+            "deck_skip": 0, "cleared": 0, "saves": 0}
+    by_source = Counter()
+    for entry in log_entries:
+        if not isinstance(entry, dict):
+            continue
+        at = _parse_iso(entry.get("at"))
+        if at is None or at < cutoff or at > now:
+            continue
+        to = entry.get("to", "")
+        source = entry.get("source", "api") or "api"
+        by_source[source] += 1
+        if to == "act":
+            week["act"] += 1
+        elif to == "revisit":
+            week["revisit"] += 1
+        elif to == "archive":
+            week["auto_archived" if source == "decay" else "manual_archive"] += 1
+        elif to == "skip":
+            week["deck_skip"] += 1
+        elif to == "":
+            week["cleared"] += 1
+    week["by_source"] = dict(by_source)
+
+    cumulative = {"total": len(items), "act": 0, "revisit": 0,
+                  "auto_archived": 0, "manual_archive": 0, "untouched": 0}
+    for item in items:
+        saved = _parse_saved_at(item)
+        if saved is not None and cutoff <= saved <= now:
+            week["saves"] += 1
+        state = item.get("state") or ""
+        if state == "act":
+            cumulative["act"] += 1
+        elif state == "revisit":
+            cumulative["revisit"] += 1
+        elif state == "archive":
+            cumulative["auto_archived" if item.get("auto_archived_at") else "manual_archive"] += 1
+        else:
+            cumulative["untouched"] += 1
+
+    today = now.date()
+    week_start = today - timedelta(days=days - 1)
+    week["days"] = days
+    week["excluded_days"] = _excluded_days(week_start, today)
+    week["clean_days"] = days - week["excluded_days"]
+
+    span = (today - MEASUREMENT_BASELINE).days + 1
+    excluded = _excluded_days(MEASUREMENT_BASELINE, today)
+    since = {"days": span, "excluded_days": excluded, "clean_days": span - excluded}
+
+    return {"week": week, "cumulative": cumulative, "since_baseline": since}
+
+
+def format_loopcheck_row(rollup, now):
+    """One line in the loopcheck-history.txt format: DATE | week | cumulative | notes."""
+    w, c, s = rollup["week"], rollup["cumulative"], rollup["since_baseline"]
+    sources = " ".join(f"{k}={v}" for k, v in sorted(w["by_source"].items())) or "none"
+    return (
+        f"{now.strftime('%Y-%m-%d')} | "
+        f"week: act={w['act']} revisit={w['revisit']} manual-archive={w['manual_archive']} "
+        f"deck-skip={w['deck_skip']} cleared={w['cleared']} auto-archived={w['auto_archived']} "
+        f"saves={w['saves']} clean-days={w['clean_days']}/{w['days']} | "
+        f"cumulative: act={c['act']} revisit={c['revisit']} manual-archive={c['manual_archive']} "
+        f"auto-archived={c['auto_archived']} untouched={c['untouched']} total={c['total']} | "
+        f"since {MEASUREMENT_BASELINE.isoformat()}: clean-days={s['clean_days']}/{s['days']}; "
+        f"changes by source: {sources}"
+    ).replace("\n", " ")
+
+
+def format_loop_line(rollup):
+    """One short line for the Monday brief. Numbers only, nothing user-written."""
+    import html as html_mod
+    w, c, s = rollup["week"], rollup["cumulative"], rollup["since_baseline"]
+    text = (
+        f"Loop this week: {w['act']} acted, {w['manual_archive']} archived by hand, "
+        f"{w['revisit']} marked later, {w['deck_skip']} deck skips, {w['auto_archived']} auto-archived, "
+        f"{w['saves']} saves, {w['clean_days']} of {w['days']} clean days. "
+        f"Since {MEASUREMENT_BASELINE.strftime('%d %b')}: act {c['act']}, later {c['revisit']}, "
+        f"hand-archived {c['manual_archive']} of {c['total']} items, {s['clean_days']} clean days."
+    )
+    return (f'<div style="font-size:12px;color:#9CA3AF;font-family:Arial,sans-serif;'
+            f'margin-top:10px;">{html_mod.escape(text)}</div>')
+
+
+def append_loopcheck_row(row):
+    """Append one row unless a row for the same date exists. Returns True when written."""
+    day = row[:10]
+    if LOOPCHECK_FILE.exists():
+        for line in LOOPCHECK_FILE.read_text().splitlines():
+            if line.startswith(day + " | "):
+                return False
+        with open(LOOPCHECK_FILE, "a") as f:
+            f.write(row + "\n")
+        return True
+    LOOPCHECK_FILE.write_text(
+        "# Content Digest loop-check history\n"
+        "# Format: DATE | week | cumulative | notes\n" + row + "\n")
+    return True
+
+
 def group_by_category(items):
     grouped = defaultdict(list)
     for item in items:
@@ -241,9 +399,8 @@ def format_resurfaced_section(picked, base, token, now):
 {cards}'''
 
 
-def format_email_body(grouped, send_date, resurfaced_html="", aged_count=0):
+def format_email_body(grouped, send_date, resurfaced_html="", aged_count=0, loop_html=""):
     """Generate HTML email body matching the Content Digest dark theme."""
-    from collections import Counter
     import html as html_mod
 
     total = sum(len(items) for items in grouped.values())
@@ -366,6 +523,7 @@ def format_email_body(grouped, send_date, resurfaced_html="", aged_count=0):
     <div style="font-size:14px;color:#9CA3AF;font-family:Arial,sans-serif;">{save_word} in the last 24 hours</div>
     {cat_summary}
     {f'<div style="font-size:12px;color:#6B7280;font-family:Arial,sans-serif;margin-top:10px;">{aged_count} item{"" if aged_count == 1 else "s"} aged out of the backlog automatically</div>' if aged_count else ''}
+    {loop_html}
   </div>
 
   {resurfaced_html}
@@ -398,7 +556,7 @@ def send_email(config, subject, body):
         server.send_message(msg)
 
 
-def format_empty_email_body(send_date, total_items):
+def format_empty_email_body(send_date, total_items, loop_html=""):
     """HTML body when no items saved in last 24h."""
     date_str = send_date.strftime("%A, %B %d, %Y")
     return f"""<!DOCTYPE html>
@@ -413,6 +571,7 @@ def format_empty_email_body(send_date, total_items):
   <div style="background:#1E293B;border-radius:12px;padding:24px;text-align:center;">
     <div style="font-size:18px;color:#F1F5F9;font-weight:bold;margin-bottom:12px;">No new saves in the last 24 hours</div>
     <div style="font-size:14px;color:#9CA3AF;line-height:1.6;">Your knowledge base has <strong style="color:#F97316;">{total_items}</strong> total items. Save something today to keep building.</div>
+    {loop_html}
   </div>
   <div style="text-align:center;margin-top:24px;font-size:12px;color:#64748B;">
     Sent daily at 7:00 AM Dubai time
@@ -422,8 +581,32 @@ def format_empty_email_body(send_date, total_items):
 </html>"""
 
 
+def run_weekly(dry_run):
+    """`daily_brief.py --weekly [--dry-run]`: print the rollup row and append it
+    to loopcheck-history.txt (once per day). Never sends mail."""
+    log("Weekly rollup started." + (" (dry run)" if dry_run else ""))
+    try:
+        now = datetime.now(DUBAI_OFFSET)
+        items = load_knowledge().get("items", [])
+        rollup = weekly_rollup(items, load_triage_log(), now)
+        row = format_loopcheck_row(rollup, now)
+        print(row)
+        if dry_run:
+            log("Dry run: row rendered, nothing written.")
+            return 0
+        written = append_loopcheck_row(row)
+        log("Rollup row " + ("appended to" if written else "already present in")
+            + f" {LOOPCHECK_FILE.name}.")
+        return 0
+    except Exception as e:
+        log(f"ERROR: {type(e).__name__}: {e}")
+        return 1
+
+
 def main():
     dry_run = "--dry-run" in sys.argv
+    if "--weekly" in sys.argv:
+        return run_weekly(dry_run)
     log("Daily brief started." + (" (dry run)" if dry_run else ""))
     try:
         config = load_config()
@@ -439,6 +622,17 @@ def main():
         aged = aged_out_last_24h(all_items, send_date)
         resurfaced_html = format_resurfaced_section(picked, base, token, send_date)
 
+        # Monday: the weekly loop check rides the brief. A rollup failure must
+        # never stop the brief, so it is fenced off on its own.
+        loop_html, loop_row = "", None
+        if send_date.weekday() == 0:
+            try:
+                rollup = weekly_rollup(all_items, load_triage_log(), send_date)
+                loop_html = format_loop_line(rollup)
+                loop_row = format_loopcheck_row(rollup, send_date)
+            except Exception as e:
+                log(f"Weekly rollup skipped: {type(e).__name__}: {e}")
+
         if recent or picked or aged:
             grouped = group_by_category(recent)
             parts = [f"{len(recent)} saves"]
@@ -447,10 +641,10 @@ def main():
             subject = f"Content Digest, {send_date.strftime('%A %B %d')}: " + ", ".join(parts)
             body = format_email_body(grouped, send_date,
                                      resurfaced_html=resurfaced_html,
-                                     aged_count=len(aged))
+                                     aged_count=len(aged), loop_html=loop_html)
         else:
             subject = f"Content Digest, {send_date.strftime('%A %B %d')}: no new saves"
-            body = format_empty_email_body(send_date, len(all_items))
+            body = format_empty_email_body(send_date, len(all_items), loop_html=loop_html)
 
         try:
             LAST_RENDER_FILE.write_text(body)
@@ -460,6 +654,8 @@ def main():
         if dry_run:
             log(f"Dry run: rendered {len(recent)} saves, {len(picked)} resurfaced, "
                 f"{len(aged)} aged out. Wrote {LAST_RENDER_FILE.name}; nothing sent.")
+            if loop_row:
+                log(f"Dry run: weekly row would be: {loop_row}")
             return 0
 
         send_email(config, subject, body)
@@ -467,6 +663,12 @@ def main():
             save_resurface(resurface, picked, send_date)
         log(f"Sent brief with {len(recent)} items, {len(picked)} resurfaced, "
             f"{len(aged)} aged out, to {config['recipient']}.")
+        if loop_row:
+            try:
+                written = append_loopcheck_row(loop_row)
+                log("Weekly rollup row " + ("appended." if written else "already present."))
+            except Exception as e:
+                log(f"Weekly rollup row not written: {type(e).__name__}: {e}")
         return 0
 
     except Exception as e:
