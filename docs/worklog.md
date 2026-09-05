@@ -268,3 +268,25 @@ Behaviour-neutral for the loop; nothing the measurement can see.
   audit B2); `config.json` keys named, the brief time belongs to the LaunchAgent
   (the unread `send_hour_dubai` and `send_minute_dubai` keys, audit B3, stay in
   the host's file until the owner removes them; not edited on the host).
+
+## 2026-09-05: explicit bind, shipped switched off (kk2 Cowork)
+
+Audit A8 and the switchboard pattern: bind to named addresses instead of
+`0.0.0.0` plus a source regex. Shipped with the key absent, so nothing changes
+on the host until the owner adds `bind_addresses` to the gitignored
+`config.json`; the product is in a measurement phase and home-LAN capture
+would stop if that address were not listed.
+
+- `server.py`: `_bind_addresses_from_config()` (validates each entry with
+  `ipaddress`), `_bind_servers()` (one ThreadingHTTPServer per address, retried
+  for up to 120 s in 5 s steps because a private-network address can appear
+  after the LaunchAgent starts; a dead address is skipped; none bound falls back
+  to `0.0.0.0` with a warning). Extra servers run on daemon threads.
+- `tests/test_server_bind.py`: 9 tests (config parsing, loopback bind on an
+  ephemeral port, TEST-NET address skipped, retry-until-appears with a fake
+  server class, one dead address does not stop the others). Live: a temp copy
+  with `["127.0.0.1"]` listened on `127.0.0.1:7799` only, `/health` 200 on
+  loopback and connection refused on the LAN address.
+- Owner step when ready (after the 09-17 read): add the key on the host, then
+  `lsof -nP -iTCP:7778 -sTCP:LISTEN` must show exactly the listed addresses and
+  the phone must still save from both the tailnet and home Wi-Fi.

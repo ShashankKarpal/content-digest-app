@@ -126,6 +126,8 @@ Real credentials live only on local machines. Nothing in this repository holds a
 
 The server binds `0.0.0.0:7778` but refuses any connection that does not come from loopback, an RFC1918 private range, or the Tailscale CGNAT block (100.64/10). Every POST endpoint, including `/delete`, `/state`, and `/ask`, requires the bearer token or a valid session cookie, and the knowledge base at `/view` is locked behind a one-time unlock per browser: the Locked page asks for the token once and sets a year-long session cookie (the token itself is never stored in the browser, and since 2026-09-05 the menu bar client opens plain `/view` rather than putting the token in the URL). Placeholder token values are treated as no token at all: the server rejects everything until a real random token is set.
 
+Optional explicit bind (off by default): add `"bind_addresses": ["127.0.0.1", "100.x.y.z"]` to `config.json` and the server listens on exactly those addresses instead of `0.0.0.0`, so traffic from any other interface is refused by the kernel before the allowlist is even consulted. Each address is retried for up to two minutes at startup because a tailnet address can appear a few seconds after login; an address that never binds is skipped, and if none binds the server falls back to `0.0.0.0` with a warning so capture stays up. List your home LAN address too if the phone saves over Wi-Fi.
+
 Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote access. There is no TLS; on a hostile local network, traffic is readable in transit.
 
 ## Usage

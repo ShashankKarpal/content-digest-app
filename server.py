@@ -283,6 +283,59 @@ _TRUSTED_SOURCE_RE = re.compile(
 def _trusted_source(ip):
     return ip == "::1" or bool(_TRUSTED_SOURCE_RE.match(ip))
 
+
+# Explicit bind (audit A8, 2026-09-05). By default the server still listens on
+# 0.0.0.0 behind the source allowlist above. When the gitignored config.json
+# carries "bind_addresses": ["127.0.0.1", "<private-network address>"], it
+# listens on exactly those instead, one ThreadingHTTPServer per address, so a
+# packet from any other interface is refused by the kernel before Python sees
+# it. Shipped switched off: turning it on is a config edit on the host, and it
+# drops home-LAN capture unless that address is listed too.
+BIND_RETRY_SECONDS = 120   # a tailnet address may appear seconds after login
+BIND_RETRY_DELAY = 5
+CONFIG_FILE = BASE_DIR / "config.json"
+
+
+def _bind_addresses_from_config():
+    """The optional bind_addresses list from config.json; [] when absent."""
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
+    except Exception as e:
+        print(f"[server] config.json unreadable ({type(e).__name__}); binding 0.0.0.0", flush=True)
+        return []
+    addrs = cfg.get("bind_addresses") or []
+    if not isinstance(addrs, list):
+        return []
+    out = []
+    for a in addrs:
+        try:
+            ipaddress.ip_address(str(a).strip())
+            out.append(str(a).strip())
+        except ValueError:
+            print(f"[server] ignoring invalid bind address {a!r}", flush=True)
+    return out
+
+
+def _bind_servers(addresses, port, handler, retry_seconds=BIND_RETRY_SECONDS,
+                  delay=BIND_RETRY_DELAY, server_cls=ThreadingHTTPServer, sleep=time.sleep):
+    """Bind one server per address, retrying each for up to retry_seconds
+    because an interface address can arrive after the LaunchAgent starts.
+    Returns the servers that bound; an address that never binds is logged and
+    skipped so the others still serve."""
+    servers = []
+    for addr in addresses:
+        deadline = time.monotonic() + retry_seconds
+        while True:
+            try:
+                servers.append(server_cls((addr, port), handler))
+                break
+            except OSError as e:
+                if time.monotonic() >= deadline:
+                    print(f"[server] could not bind {addr}:{port} after {retry_seconds}s: {e}", flush=True)
+                    break
+                sleep(delay)
+    return servers
+
 is_processing = False
 data_lock = threading.Lock()
 
@@ -1827,6 +1880,15 @@ if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7778
     # ThreadingHTTPServer: a slow /ask or /add_sync must never block the
     # iPhone shortcut, the menu bar client, or the Chrome extension.
-    print(f"[server] Content Digest server v{SERVER_VERSION} starting on 0.0.0.0:{port}", flush=True)
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
+    addresses = _bind_addresses_from_config()
+    servers = _bind_servers(addresses, port, Handler) if addresses else []
+    if not servers:
+        if addresses:
+            print(f"[server] WARNING: none of {addresses} could be bound; falling back to 0.0.0.0 "
+                  "so capture stays up (the source allowlist still applies)", flush=True)
+        servers = [ThreadingHTTPServer(("0.0.0.0", port), Handler)]
+    bound = ", ".join(f"{s.server_address[0]}:{s.server_address[1]}" for s in servers)
+    print(f"[server] Content Digest server v{SERVER_VERSION} starting on {bound}", flush=True)
+    for extra in servers[1:]:
+        threading.Thread(target=extra.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
