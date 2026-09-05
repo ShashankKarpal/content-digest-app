@@ -82,6 +82,19 @@ Done when: user feels the app is working for them, not just collecting for them.
 
 ---
 
+## Delivered 2026-09-05 (measurement instruments; kk2, owner-delegated order, one commit each)
+
+- Weekly loop check: `state_changed_at` and `state_source` on every state change, `triage_log.jsonl`, `daily_brief.py --weekly`, Monday brief line plus the `loopcheck-history.txt` row written on the host, exclusion windows subtracted.
+- Runtime watchdog: `heartbeat.json`, `clients.json` via `X-Client`, richer `/health`, content-free request log, Host health line in the brief, no strikes on zero-contact days, Mac client as observer (two missed polls, one banner, marker on the icon, recovery banner); extension 0.6.1.
+- Small debts: client opens plain `/view`, one `TZ` constant, first retry sweep 10 minutes after start, README truth about settings.
+- Explicit bind (`bind_addresses` in `config.json`), shipped switched off; turn on after the read.
+
+## Parked until the 2026-09-17 read (do not start before it)
+
+Order if the loop shows life: save-to-digest MCP (`/add` and `/ask` as MCP tools; the 2026-09-02 SSRF fixes are its precondition), off-tailnet triage (Funnel on `/triage` with a derived key, or reply-by-email), push channel (local banners already ship; ntfy only for content-free health alerts), host failover (only if outages become weekly). If the loop stays flat, the pivot clause in `redteam-audit-2026-08-17.md` section 6 applies instead.
+
+---
+
 ## Killed (red team audit 2026-08-17; do not resurrect without new evidence)
 
 - Topic clustering: organizes the pile instead of draining it.

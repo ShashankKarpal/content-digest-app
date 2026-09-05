@@ -12,7 +12,7 @@
 
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-99612F?style=flat-square">
-  <img alt="Status" src="https://img.shields.io/badge/status-v0.4-99612F?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/status-v0.5-99612F?style=flat-square">
   <img alt="Local first" src="https://img.shields.io/badge/local-first-99612F?style=flat-square">
   <img alt="Stack" src="https://img.shields.io/badge/built%20with-Python-1A1917?style=flat-square">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-1A1917?style=flat-square"></a>
@@ -36,7 +36,7 @@
 - **iPhone share sheet.** A Shortcut posts to the server's authenticated endpoint.
 - **Chrome extension.** Click the icon, paste the exact URL, send. The popup reports honestly whether the item was saved, already saved, queued for retry, refused, or failed, and links straight to the knowledge base. Saving the current page with its rendered text (for logged-in-only pages such as Reddit and LinkedIn) and right-click capture remain as optional conveniences.
 - **Inbox capture before auth.** URLs are logged to `inbox.json` before the auth check so a rejected request is still visible for review, but only authenticated entries are ever re-queued for processing.
-- **Self-healing capture.** Fetch failures retry every 6 hours up to 3 attempts; inbox URLs that never became items are re-queued.
+- **Self-healing capture.** Fetch failures retry 10 minutes after the server starts and every 6 hours after that, up to 3 attempts; inbox URLs that never became items are re-queued on the same sweep.
 - **URL normalization.** Tracking parameters (`utm_*`, `fbclid`, `share_id`, `si`) are stripped before dedupe and storage.
 - **Canonical URL dedupe.** The same article saved twice stays one item.
 
@@ -132,13 +132,15 @@ Still: do not port-forward this, and prefer a tailnet (Tailscale) for remote acc
 
 ## Usage
 
-**iPhone Shortcut.** Create a shortcut with a Get Contents of URL action:
+**iPhone Shortcut.** One Shortcut called Save to Content Digest, offered in the share sheet. Five actions:
 
-- URL: `http://YOUR_MAC_IP:7778/add`
-- Method: POST
-- Headers: `Authorization: Bearer YOUR_AUTH_TOKEN` and `X-Client: shortcut` (the second one lets the server count the phone as a live client; optional but recommended)
-- Body: JSON with key `url`
-- Optional but worth it: add a Show Result step after Get Contents of URL so a timeout fails loudly instead of silently.
+1. Receive input from Share Sheet (URLs; if there is no input, Continue).
+2. URL: `http://YOUR_SERVER:7778/add_sync` (your tailnet or LAN address).
+3. Get Contents of URL: Method POST; Headers `Authorization: Bearer YOUR_AUTH_TOKEN` and `X-Client: shortcut`; Request Body JSON with one key `url` set to Shortcut Input. `/add_sync` waits for the result (a slow page can take a minute or two), so the next step can say what really happened.
+4. Get Dictionary Value `status` from Contents of URL.
+5. Show Notification with that value: `saved`, `already_saved`, `failed`, or `invalid`.
+
+If the server cannot be reached at all (phone off the tailnet, host down), Shortcuts stops with its own error, which is the loud failure you want. The `X-Client` header is optional; it lets the server count the phone as a live client for the host-health line.
 
 **Chrome extension.** Open `chrome://extensions`, enable Developer mode, Load unpacked, select `extension/`. Set your server URL and auth token in the extension options, then use Test connection. Clicking the toolbar icon opens a popup with an empty URL field: paste the exact URL you want summarized and click Send to Content Digest. The popup immediately says the item was sent and Content Digest is working on it, then reports the real outcome: saved, already saved, queued for retry (server unreachable or token rejected; nothing is discarded), refused, or failed. The summary normally appears in Content Digest within about a minute, depending on the server. Open Content Digest jumps to the knowledge base. Save current page and the right-click Save to Content Digest menu are optional conveniences; on LinkedIn the right-click path uses LinkedIn's own Copy link to post action to find the post permalink. Feed and container pages such as `linkedin.com/feed/` are refused rather than saved as items. Upgrades preserve the existing local settings and keep the one-time 0.5.1 purge of Chrome's synced copy.
 
@@ -152,6 +154,7 @@ daily_brief.py    morning email brief with backlog resurfacing
 extension/        Chrome extension
 design/           brand assets, tokens, BRAND.md
 docs/             product intent, roadmap, decision log, worklog, audits
+tests/            unit tests (python3 -m unittest discover tests) and the extension acceptance suite (node tests/extension_acceptance.test.js)
 screenshots/      UI screenshots
 ```
 

@@ -1,8 +1,70 @@
 # docs/architecture.md
 
-## System Architecture — Content Digest App (v0.4)
+## System Architecture: Content Digest App (v0.5, measurement phase)
 
-### Extension capture rewrite (v0.6 candidate, 2026-09-03)
+### Measurement instruments and hardening (2026-09-05)
+
+Four commits, one per item, in the measurement phase. None of them changes what
+the user sees except one line in the Monday brief and a status row in the
+menu bar menu.
+
+**State provenance and the weekly loop check (D6).**
+- `set_item_state(url, state, source)` stamps `state_changed_at` and
+  `state_source` on the item and appends one JSON line to `triage_log.jsonl`:
+  `{at, url, from, to, source}`. Sources: `triage-link` (signed link in the
+  brief), `deck` (triage deck), `view` (knowledge base page), `api` (any other
+  authenticated caller), `decay` (auto-archive). Deck skips log as `to: skip`.
+  The page and the deck send their source in the `/state` body; it is
+  allowlisted and used only for the log, never for authorization.
+- `daily_brief.py`: `weekly_rollup(items, log, now)` counts the trailing 7 days
+  from the log and the cumulative picture from item state, subtracting the
+  exclusion windows (`MEASUREMENT_EXCLUSIONS`) from the clean-day count.
+  `--weekly [--dry-run]` prints the row; the Monday brief embeds a "Loop this
+  week" line and appends the row to `loopcheck-history.txt` once per date.
+
+**Runtime watchdog (D1).**
+- Server: `heartbeat.json` every 5 minutes (at, started_at, version, pid);
+  `clients.json` records the last authenticated contact per `X-Client`
+  (`mac-client`, `extension`, `shortcut`, `view`, `triage-link`, `brief`, else
+  `api`). A valid signed triage tap counts as contact; `/health` polls and
+  unauthenticated requests never do. `/health` returns `ok, processing,
+  version, started_at, last_save_at, last_client_contact_at, clients,
+  failures`. `log_request` prints `[req] METHOD path status client=` with the
+  query string dropped; `/health` and `/assets/` are skipped.
+- Brief: `host_health()` warns when the last save or the last client contact is
+  48 h or older; `save_resurface(..., strike=False)` on a day with no client
+  contact in 24 h, so an outage cannot push items into auto-archive.
+- Mac client: polls `/health` every 15 minutes without credentials, shows the
+  result in a greyed menu row, posts one banner after two consecutive misses
+  and puts `!` beside the icon, posts one recovery banner. `CD_HEALTH_URL` and
+  `CD_HEALTH_POLL_SECONDS` exist for Terminal tests only.
+- Extension 0.6.1 and the iPhone Shortcut send `X-Client`.
+
+**Small debts.** The client opens plain `/view` (the Locked page asks for the
+token once); one `TZ` constant in `server.py`; `retry_loop` sweeps 10 minutes
+after start and then every 6 hours, logging one line per sweep.
+
+**Explicit bind, off by default.** `bind_addresses` in `config.json` makes the
+server listen on exactly those addresses (one `ThreadingHTTPServer` per
+address, 120 s retry for late interface addresses, fallback to `0.0.0.0` with a
+warning if none binds). Absent key: current behaviour.
+
+**Data files on the host (all gitignored):** `knowledge.json`, `embeddings.json`,
+`inbox.json`, `failures.json`, `resurface.json`, `triage_log.jsonl`,
+`heartbeat.json`, `clients.json`, `loopcheck-history.txt`, `brief_last.html`.
+
+**Tests:** `tests/test_daily_brief_rollup.py` (18), `tests/test_server_bind.py`
+(9), `tests/extension_acceptance.test.js` (64 assertions).
+
+```
+brief tap / deck / page / api  --> set_item_state --> knowledge.json (state, state_changed_at, state_source)
+                                                 \-> triage_log.jsonl --> daily_brief.py --weekly (Monday) --> loopcheck-history.txt
+any authenticated request      --> clients.json  --> /health, Host health line, strike rule
+server thread (5 min)          --> heartbeat.json
+Mac client (15 min, no auth)   --> GET /health   --> menu row, banner after two misses
+```
+
+### Extension capture (0.6, shipped 2026-09-04; 0.6.1 on 2026-09-05 adds the X-Client header)
 
 The server shape is unchanged. Every extension capture now uses authenticated
 `POST /add_sync`, so the client receives `saved`, `already_saved`, `failed`, or

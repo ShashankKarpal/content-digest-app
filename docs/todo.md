@@ -1,51 +1,36 @@
 # docs/todo.md
 
-## Task List — Content Digest App
+## Task List: Content Digest App
 
-## Must-Have (v0.1)
+Rewritten 2026-09-05. Version history lives in roadmap.md and worklog.md; this
+file holds only what is open.
 
-- [x] Run Karl's full audit on app.py and review findings.
-- [x] Replace regex-based HTML extraction with trafilatura.
-- [x] Fix delete persistence: deletion removes item from knowledge.json, not just UI.
-- [x] Add auth token to receiver: requests without Bearer token are rejected.
-- [x] Push markdown OS files to GitHub.
-- [ ] Test 10 varied URLs: articles, LinkedIn, YouTube, Reddit, news. Summaries must feel trustworthy.
-- [ ] Test iPhone shortcut end to end across Safari, LinkedIn, Chrome.
-- [ ] Confirm no duplicate saves for the same URL.
-- [ ] Karl review and sign-off on v0.1.
+## Measurement phase (until about 2026-09-17), owner
 
-## Done in v0.4 (2026-07-19)
+- [x] Reload the Chrome extension to 0.6.1 (2026-09-05).
+- [ ] iPhone Shortcut: add the header `X-Client: shortcut` (the status notification step already exists).
+- [ ] Tap at least one Act / Later / Archive link in a 07:00 brief so the first real `triage_log.jsonl` line exists.
+- [ ] Monday 2026-09-07: confirm the brief carries the "Loop this week" line and `loopcheck-history.txt` on the host gained its first row; then retire the external weekly SSH loop check.
+- [ ] Live extension tests still not run (automated coverage only): wrong or removed token, changed server address, clean-profile uninstall and reinstall migration, deleting the historical `/feed/` knowledge item.
+- [ ] Browser-capture the two authwalled links still in the failures list (Patreon post, one LinkedIn post) via the extension.
+- [ ] Decide whether to clear the three 2026-09-03 extension-test rows from the failures list (LinkedIn safety/go wrapper, signup/cold-join, one posts/activity).
+- [ ] Optional: remove the unread `send_hour_dubai` and `send_minute_dubai` keys from the host `config.json` (the brief time is the LaunchAgent's).
 
-- [x] Reddit summaries without API approval: old.reddit HTML + arctic-shift fallback (extractors.py).
-- [x] Source-aware extractors: YouTube transcripts, X posts.
-- [x] Add item states to knowledge.json: act on this, revisit later, archive.
-- [x] Add item state controls to knowledge.html UI + state pills in daily brief.
-- [x] Validate LLM output before saving: JSON shape, category values, relevance bounds.
-- [x] Normalize URLs before dedup: strip tracking params.
-- [x] Auto-retry fetch failures + inbox reconciliation (every 6h).
-- [x] Ask-your-knowledge-base: embeddings + keyword fallback, cited answers.
-- [x] Chrome extension: browser-side capture with content passthrough.
-- [x] Fix Groq fallback (decommissioned model + UA block).
-- [x] Digest email (shipped earlier as daily_brief.py, 7am LaunchAgent).
+## After the read
 
-## Deploy (next session, M1)
+- [ ] The 2026-09-17 read: two paths, see current-phase.md and roadmap.md (parked list, or the pivot clause).
+- [ ] If the loop is kept: add `bind_addresses` to the host `config.json` (loopback, tailnet address, home LAN address), verify with `lsof -nP -iTCP:7778 -sTCP:LISTEN`, confirm the phone still saves from both networks.
+- [ ] Move hardcoded values (port, model names, TTLs) into a config file.
 
-- [ ] git pull on M1; pip3 install youtube-transcript-api --break-system-packages.
-- [ ] ollama pull nomic-embed-text (enables semantic ask).
-- [ ] Restart server LaunchAgent; sanity test Reddit save, /state, /ask.
-- [ ] Load extension/ in Chrome, set server + token in options.
-- [ ] Verify morning brief shows state pills on the next real send.
+## Screenshots to refresh in README (owner takes, then rephrase and commit)
 
-## Later (v0.3 behaviors and beyond)
+- [ ] `screenshots/menubar-menu-mac.png`: menu open, showing the Server status row.
+- [ ] `screenshots/extension-popup-chrome.png`: the 0.6.1 popup, empty field, Ready.
+- [ ] `screenshots/extension-options-chrome.png`: options with a green Test connection result.
+- [ ] `screenshots/brief-iphone.png`: a morning brief in Mail with the backlog triage buttons.
+- [ ] `screenshots/brief-monday-loop-line.png`: the Monday brief with the "Loop this week" line (after 2026-09-07).
+- [ ] `screenshots/triage-deck-mac.png`: one deck card open on the knowledge base.
 
-- [ ] Group similar saves together (topic clustering; embeddings now exist to power this).
-- [ ] Surface most important items first in digest and knowledge base.
-- [ ] Suppress or demote low-value clutter.
-- [ ] Move hardcoded values into a config file.
+## Historical checklists
 
-## Parking Lot (no version assigned)
-
-- [ ] LinkedIn saved posts bulk harvesting.
-- [ ] Mobile-friendly knowledge base view.
-- [ ] Export to Notion or Obsidian.
-- [ ] Personalization from state patterns (v1).
+The v0.1 checklist (10-URL test, iPhone shortcut end to end, dedupe confirmation, Karl sign-off) and the v0.4 deploy list were superseded by the 2026-08-17 red team audit and the v0.5 ship; see roadmap.md "Delivered" sections and `redteam-audit-2026-08-17.md`. Killed items (topic clustering, LinkedIn bulk harvesting, Notion or Obsidian export, multi-user digest) are listed in roadmap.md and are not to be resurrected without new evidence.
