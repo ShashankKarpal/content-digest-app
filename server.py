@@ -29,6 +29,8 @@ FAILURES_FILE = BASE_DIR / "failures.json"
 HTML_FILE = BASE_DIR / "knowledge.html"
 INBOX_FILE = BASE_DIR / "inbox.json"
 EMB_FILE = BASE_DIR / "embeddings.json"
+DISMISSED_FILE = BASE_DIR / "dismissed.json"
+DISMISSED_CAP = 1000
 
 # Brand lockup for the /view header; falls back to plain text if missing.
 LOGO_SVG = ""
@@ -721,6 +723,39 @@ def _remove_failure(url):
         _save_failures(failures)
 
 
+def _load_dismissed():
+    try:
+        d = json.loads(DISMISSED_FILE.read_text()) if DISMISSED_FILE.exists() else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _dismiss(url):
+    """Remember that the owner deleted this link (a saved item or a failure),
+    so the self-healing inbox sweep never brings it back. Without this, a
+    deleted link that had an authenticated inbox entry became an "orphan" and
+    _reconcile_inbox re-queued it within one sweep, which broke the v0.1 rule
+    that a delete is persistent. Keyed by the raw and the normalized form,
+    value = when. A later capture of the same link (a newer inbox entry) is
+    still processed, because _reconcile_inbox compares the two times."""
+    now = datetime.now(TZ).isoformat()
+    d = _load_dismissed()
+    keys = {url}
+    try:
+        keys.add(normalize_url(url))
+    except Exception:
+        pass
+    for k in keys:
+        if k:
+            d[k] = now
+    if len(d) > DISMISSED_CAP:
+        d = dict(sorted(d.items(), key=lambda kv: kv[1])[-DISMISSED_CAP:])
+    tmp = DISMISSED_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, indent=2))
+    tmp.rename(DISMISSED_FILE)
+
+
 def _self_heal_failures():
     data = _load_data()
     saved_urls = {i["url"] for i in data["items"]}
@@ -1026,6 +1061,7 @@ def _reconcile_inbox():
         return []
     saved = {i["url"] for i in _load_data()["items"]}
     failed = {f["url"] for f in _load_failures()["items"]}
+    dismissed = _load_dismissed()
     cutoff = datetime.now(TZ) - timedelta(minutes=30)
     orphans = []
     for entry in inbox["items"]:
@@ -1039,6 +1075,13 @@ def _reconcile_inbox():
             received = datetime.fromisoformat(entry.get("received_at", ""))
         except ValueError:
             continue
+        gone = dismissed.get(url) or dismissed.get(raw)
+        if gone:
+            try:
+                if received <= datetime.fromisoformat(gone):
+                    continue   # the owner deleted it after this capture
+            except ValueError:
+                continue
         if received < cutoff and url not in orphans:
             orphans.append(url)
     return orphans[:10]
@@ -1792,6 +1835,7 @@ class Handler(BaseHTTPRequestHandler):
                     data = _load_data()
                     data["items"] = [i for i in data["items"] if i["url"] != url]
                     _save_data(data)
+                _dismiss(url)
                 _write_html(build_html(data["items"]))
             self.wfile.write(json.dumps({"ok": True}).encode())
             return
@@ -1800,6 +1844,7 @@ class Handler(BaseHTTPRequestHandler):
             url = body.get("url", "").strip()
             if url:
                 _remove_failure(url)
+                _dismiss(url)
                 _write_html(build_html(_load_data()["items"]))
             self.wfile.write(json.dumps({"ok": True}).encode())
             return

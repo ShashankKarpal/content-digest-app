@@ -50,6 +50,7 @@ brief_last.html
 triage_log.jsonl
 heartbeat.json
 clients.json
+dismissed.json
 
 # --- secrets hygiene completion (audit 2026-07-30) ---
 .env.*
