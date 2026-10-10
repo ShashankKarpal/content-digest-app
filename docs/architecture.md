@@ -232,5 +232,5 @@ Mac dialog (osascript) ----------------> app.py
 - Fully local: no cloud APIs, no third-party services.
 - LM Studio must be running for summarization to work.
 - Mac IP (<mac-lan-ip>) may change. iPhone shortcut must be updated manually if it does.
-- Python at /opt/homebrew/bin/python3 (version 3.14).
+- Python at /opt/homebrew/bin/python3.14 (version 3.14). The M1 jobs call this versioned path; the unversioned /opt/homebrew/bin/python3 is not installed there.
 - User edits files via Terminal heredoc or python3 -c, not TextEdit (causes indentation issues).
