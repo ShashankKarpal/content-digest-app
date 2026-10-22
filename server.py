@@ -7,7 +7,6 @@ import json
 import math
 import os
 import re
-import socket
 import sys
 import threading
 import time
@@ -21,7 +20,8 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 # brief always agree on where runtime data lives regardless of machine.
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
-from extractors import get_extractor, normalize_url
+from extractors import get_extractor, normalize_url, artifact_urls, container_page_reason
+from extractors import blocked_url_reason as _blocked_url_reason   # the SSRF guard
 import migrations
 
 DATA_FILE = BASE_DIR / "knowledge.json"
@@ -69,7 +69,9 @@ KNOWN_CLIENTS = {"mac-client", "extension", "shortcut", "view", "brief"}
 # ---------------------------------------------------------------------------
 # Content quality gates. Three layers, because each one has caught real junk:
 #   1. _blocked_url_reason: placeholder domains, localhost, private IPs
-#      (the KB once saved its own /view page and example.com).
+#      (the KB once saved its own /view page and example.com). It lives in
+#      extractors.py as blocked_url_reason since 2026-10, so the short-link
+#      resolver there checks every redirect hop with the same guard.
 #   2. _junk_content_reason: interstitial / authwall / proxy-error text that
 #      arrives with HTTP 200 and a non-empty body (lnkd.in redirect pages,
 #      r.jina.ai "request timed out" bodies).
@@ -78,14 +80,6 @@ KNOWN_CLIENTS = {"mac-client", "extension", "shortcut", "view", "brief"}
 # A page that fails any layer becomes a recorded failure (visible, retryable),
 # never a saved item.
 # ---------------------------------------------------------------------------
-
-_BLOCKED_HOSTS = {"example.com", "example.org", "example.net", "localhost", "test.com"}
-
-_PRIVATE_IP_RE = re.compile(
-    r"^(127\.|10\.|192\.168\.|0\.0\.0\.0|169\.254\."
-    r"|172\.(1[6-9]|2\d|3[01])\."          # 172.16/12
-    r"|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)"  # 100.64/10 CGNAT incl. Tailscale
-)
 
 _JUNK_CONTENT_MARKERS = (
     "checking your browser before accessing",
@@ -159,54 +153,6 @@ def _write_html(text):
     tmp = HTML_FILE.with_suffix(".tmp")
     tmp.write_text(text)
     tmp.rename(HTML_FILE)
-
-
-def _address_is_internal(addr):
-    try:
-        ip = ipaddress.ip_address(addr)
-    except ValueError:
-        return False
-    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-            or ip.is_multicast or ip.is_unspecified
-            or ip in ipaddress.ip_network("100.64.0.0/10"))   # CGNAT incl. Tailscale
-
-
-def _blocked_url_reason(url, resolve=True):
-    """Reject URLs that can never be real content, and URLs the server must
-    never fetch: non-http schemes, and hosts that resolve to loopback, RFC1918,
-    link-local, or the tailnet range. The literal-IP regex alone let a public
-    hostname pointing at 127.0.0.1 (or an IPv6 literal, or file://) through
-    to urlopen (audit 2026-09-02). Call again on the post-redirect URL."""
-    try:
-        import urllib.parse as _up
-        parts = _up.urlsplit(url)
-        host = parts.hostname or ""
-        scheme = (parts.scheme or "").lower()
-    except Exception:
-        return "Unparseable URL"
-    if scheme not in ("http", "https"):
-        return f"Unsupported scheme: {scheme or 'none'}"
-    if not host:
-        return "URL has no host"
-    host = host.lower()
-    bare = host[4:] if host.startswith("www.") else host
-    if bare in _BLOCKED_HOSTS:
-        return f"Placeholder/test domain: {bare}"
-    if _PRIVATE_IP_RE.match(bare) or bare.endswith(".local") or bare.endswith(".localhost") \
-            or bare == "localhost" or _address_is_internal(bare):
-        return f"Local/private address: {bare}"
-    if resolve:
-        try:
-            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-        except socket.gaierror:
-            return None   # unresolvable: let the fetch fail with its own reason
-        except Exception:
-            return None
-        for info in infos:
-            addr = info[4][0]
-            if _address_is_internal(addr):
-                return f"Host resolves to an internal address: {bare} -> {addr}"
-    return None
 
 
 def _junk_content_reason(text):
@@ -744,6 +690,32 @@ def _self_heal_failures():
         print("[startup] Self-healed " + str(removed) + " stale failure(s)")
 
 
+def _update_item(url, fields):
+    """Merge fields into one saved item under the data lock. False when the
+    item is gone (deleted while a background step was running)."""
+    with data_lock:
+        data = _load_data()
+        for item in data["items"]:
+            if item["url"] == url:
+                item.update(fields)
+                _save_data(data)
+                return True
+    return False
+
+
+def enrich_item(url, content):
+    """Runs after the save, on its own thread, so it can never delay or fail
+    one: artifact_urls, the links the post points to (short links resolved
+    hop by hop through the SSRF guard)."""
+    try:
+        links = artifact_urls(content or "", own_url=url)
+    except Exception as e:
+        print(f"[enrich] links skipped: {type(e).__name__}: {e}")
+        return
+    if _update_item(url, {"artifact_urls": links}) and links:
+        print(f"[enrich] {len(links)} artifact link(s): {url[:60]}")
+
+
 def process_url(url, content=None):
     """Process one URL end to end. If content is provided (browser-side capture
     from the Chrome extension), the fetch step is skipped entirely."""
@@ -756,6 +728,11 @@ def process_url(url, content=None):
             _record_failure(url, "quality", blocked)
             print(f"[reject] {blocked}: {url[:60]}")
             return {"status": "failed", "error_type": "quality", "reason": blocked}
+        container = container_page_reason(url)
+        if container:
+            _record_failure(url, "quality", container)
+            print(f"[reject] feed page, not a post: {url[:60]}")
+            return {"status": "failed", "error_type": "quality", "reason": container}
         data = _load_data()
         if url in [i["url"] for i in data["items"]]:
             print(f"[skip] Already saved: {url[:60]}")
@@ -825,6 +802,7 @@ def process_url(url, content=None):
             _remove_failure(url)
             _write_html(build_html(_load_data()["items"]))
             threading.Thread(target=embed_item, args=(item,), daemon=True).start()
+            threading.Thread(target=enrich_item, args=(url, content), daemon=True).start()
             print(f"[saved] {item['title']} ({item['category']})")
             return {"status": "saved", "title": item["title"], "category": item["category"]}
         except Exception as e:

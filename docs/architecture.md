@@ -2,6 +2,28 @@
 
 ## System Architecture: Content Digest App (v0.5, measurement phase)
 
+### Capture: short links, artifact_urls, feed pages (2026-10, decision 14)
+
+- The SSRF guard moved from `server.py` to `extractors.blocked_url_reason`
+  unchanged; `server.py` imports it as `_blocked_url_reason`.
+- `extractors._resolve_short_link` follows a known shortener one hop at a
+  time with redirects off (`_fetch_hop`): every hop, the destination
+  included, passes the guard before it is requested; a bare `lnkd.in/<code>`
+  answers 200 with a "leaving LinkedIn" page whose `external_url_click` link
+  names the destination; the walk stops at the first non-shortener URL
+  (never fetched) or after `MAX_SHORT_LINK_HOPS` (5) requests. `None` when
+  anything is blocked or unreadable. `normalize_url` uses it for a saved short
+  link, so the stored identity is the destination.
+- New field `artifact_urls` (list, new saves only): `enrich_item` runs on its
+  own thread after the save and stores the links found in the extracted text
+  (LinkedIn and Reddit text carries the top comments), short links resolved
+  (at most 5 per item), tracking stripped, the item's own URL and blocked
+  addresses left out. `[]` means none found; a missing field means the item
+  predates this. A failure here never touches the save.
+- `extractors.container_page_reason` (mirror of `isContainerUrl` in
+  `extension/shared.js`): a feed or front page from any capture path is a
+  "quality" failure, never an item.
+
 ### Triage and resurfacing retired; slim brief (2026-10, decision 14)
 
 - Removed: the brief's backlog items with signed Act / Later / Archive links,

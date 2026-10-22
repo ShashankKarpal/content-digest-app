@@ -38,6 +38,8 @@
 - **Self-healing capture.** Fetch failures retry 10 minutes after the server starts and every 6 hours after that, up to 3 attempts; inbox URLs that never became items are re-queued on the same sweep.
 - **URL normalization.** Tracking parameters (`utm_*`, `fbclid`, `share_id`, `si`) are stripped before dedupe and storage.
 - **Canonical URL dedupe.** The same article saved twice stays one item.
+- **Short links resolved safely.** lnkd.in and other common shorteners are followed one hop at a time to their destination (a LinkedIn "leaving LinkedIn" page included), and every hop passes the same private-address guard as the saved URL before it is requested, so a short link can never lead the server into its own network.
+- **Feed pages refused.** A feed or front page (the LinkedIn feed, the Reddit or Hacker News front page) is never saved as an item; it goes to the failures list with a note to save the post's own link.
 
 ### Extraction
 
@@ -48,6 +50,7 @@
 - **Everything else via trafilatura.** Replaced the original regex extraction and made summaries materially cleaner.
 - **Reader-proxy fallback.** Blocked sites route through a reader proxy instead of failing.
 - **Fetch failure guard.** If extraction fails, the model is never called and you get a clear notification instead of a fabricated summary.
+- **What the post links to.** Right after each save, in the background, the server lists the links in the extracted text (for LinkedIn and Reddit that includes the top comments) with short links resolved, in the item's `artifact_urls`.
 
 ### Knowledge base
 

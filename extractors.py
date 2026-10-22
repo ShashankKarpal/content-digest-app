@@ -15,8 +15,11 @@ Verified 2026-07-19:
 """
 
 import html as html_mod
+import ipaddress
 import json
 import re
+import socket
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -34,6 +37,80 @@ _SHORTENER_HOSTS = {
     "lnkd.in", "bit.ly", "t.co", "tinyurl.com", "buff.ly", "ow.ly",
     "goo.gl", "rebrand.ly", "cutt.ly", "t.ly", "shorturl.at", "rb.gy",
 }
+MAX_SHORT_LINK_HOPS = 5
+SHORT_LINK_TIMEOUT = 10
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard. Moved here from server.py (2026-10) unchanged, so that the
+# short-link resolver below checks every redirect hop with the same guard the
+# server applies to the URL it is asked to save. server.py imports it as
+# _blocked_url_reason.
+# ---------------------------------------------------------------------------
+
+_BLOCKED_HOSTS = {"example.com", "example.org", "example.net", "localhost", "test.com"}
+
+_PRIVATE_IP_RE = re.compile(
+    r"^(127\.|10\.|192\.168\.|0\.0\.0\.0|169\.254\."
+    r"|172\.(1[6-9]|2\d|3[01])\."          # 172.16/12
+    r"|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)"  # 100.64/10 CGNAT incl. Tailscale
+)
+
+
+def _address_is_internal(addr):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+            or ip.is_multicast or ip.is_unspecified
+            or ip in ipaddress.ip_network("100.64.0.0/10"))   # CGNAT incl. Tailscale
+
+
+def blocked_url_reason(url, resolve=True):
+    """Reject URLs that can never be real content, and URLs the server must
+    never fetch: non-http schemes, and hosts that resolve to loopback, RFC1918,
+    link-local, or the tailnet range. The literal-IP regex alone let a public
+    hostname pointing at 127.0.0.1 (or an IPv6 literal, or file://) through
+    to urlopen (audit 2026-09-02). Call again on the post-redirect URL."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        scheme = (parts.scheme or "").lower()
+    except Exception:
+        return "Unparseable URL"
+    if scheme not in ("http", "https"):
+        return f"Unsupported scheme: {scheme or 'none'}"
+    if not host:
+        return "URL has no host"
+    host = host.lower()
+    bare = host[4:] if host.startswith("www.") else host
+    if bare in _BLOCKED_HOSTS:
+        return f"Placeholder/test domain: {bare}"
+    if _PRIVATE_IP_RE.match(bare) or bare.endswith(".local") or bare.endswith(".localhost") \
+            or bare == "localhost" or _address_is_internal(bare):
+        return f"Local/private address: {bare}"
+    if resolve:
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror:
+            return None   # unresolvable: let the fetch fail with its own reason
+        except Exception:
+            return None
+        for info in infos:
+            addr = info[4][0]
+            if _address_is_internal(addr):
+                return f"Host resolves to an internal address: {bare} -> {addr}"
+    return None
+
+
+def _bare_host(url):
+    """Lowercase host without www. and without a port."""
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
 
 
 def _get(url, timeout=20, headers=None):
@@ -68,20 +145,92 @@ _DOMAIN_TRACKING = {
 _RESOLVE_CACHE = {}
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Hand every 3xx back to the caller instead of following it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+_LNKD_EXTERNAL_LINK_RE = re.compile(r'<a\b[^>]*data-tracking-control-name="external_url_click"[^>]*>', re.I)
+
+
+def _fetch_hop(url, timeout=SHORT_LINK_TIMEOUT):
+    """One request with redirects off. Returns (status, location, body)."""
+    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
+    try:
+        with _NO_REDIRECT_OPENER.open(req, timeout=timeout) as r:
+            return r.status, None, r.read(200_000).decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            return e.code, e.headers.get("Location"), ""
+        raise
+
+
+def _lnkd_interstitial_target(body):
+    """A bare lnkd.in/<code> link answers 200 with a "leaving LinkedIn" page,
+    not a redirect (verified 2026-10-22); the destination is the href of the
+    page's external_url_click link."""
+    m = _LNKD_EXTERNAL_LINK_RE.search(body or "")
+    href = re.search(r'href="([^"]+)"', m.group(0)) if m else None
+    return html_mod.unescape(href.group(1)) if href else None
+
+
 def _resolve_short_link(url):
-    """Follow HTTP redirects on a known shortener and return the final URL.
-    Cached. Returns the input URL unchanged on any failure."""
+    """Follow a known shortener to its destination one hop at a time. Each hop,
+    the destination included, passes blocked_url_reason (scheme, private and
+    tailnet addresses, DNS answers) BEFORE it is requested, so a short link
+    can never walk the server into its own network (red team, 2026-10). The
+    walk stops at the first URL that is not on a shortener host; that URL is
+    returned, never fetched. None when a hop is blocked, unreadable, or the
+    chain is longer than MAX_SHORT_LINK_HOPS. Cached."""
     if url in _RESOLVE_CACHE:
         return _RESOLVE_CACHE[url]
-    final = url
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            final = r.geturl() or url
-    except Exception:
-        pass
+    current, final, hops = url, None, 0
+    while True:
+        if blocked_url_reason(current):
+            break
+        host = _bare_host(current)
+        if host not in _SHORTENER_HOSTS:
+            final = current
+            break
+        if hops >= MAX_SHORT_LINK_HOPS:
+            break
+        hops += 1
+        try:
+            _, location, body = _fetch_hop(current)
+        except Exception:
+            break
+        nxt = urllib.parse.urljoin(current, location) if location else (
+            _lnkd_interstitial_target(body) if host == "lnkd.in" else None)
+        if not nxt:
+            break
+        current = nxt
     _RESOLVE_CACHE[url] = final
     return final
+
+
+def strip_tracking(url):
+    """Layer 1 of normalize_url: drop tracking parameters and the fragment,
+    lowercase scheme and host. No network."""
+    p = urllib.parse.urlsplit(url.strip())
+    host = p.netloc.lower()
+    bare_host = host[4:] if host.startswith("www.") else host
+    domain_strip = set()
+    for dom, params in _DOMAIN_TRACKING.items():
+        if bare_host == dom or bare_host.endswith("." + dom):
+            domain_strip = params
+            break
+    kept = []
+    for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True):
+        if k.lower().startswith("utm_"):
+            continue
+        if k.lower() in _GLOBAL_TRACKING or k in domain_strip:
+            continue
+        kept.append((k, v))
+    query = urllib.parse.urlencode(kept)
+    return urllib.parse.urlunsplit((p.scheme.lower(), host, p.path, query, ""))
 
 
 def normalize_url(url):
@@ -104,20 +253,7 @@ def normalize_url(url):
             if resolved and resolved != url.strip():
                 return normalize_url(resolved)
 
-        domain_strip = set()
-        for dom, params in _DOMAIN_TRACKING.items():
-            if bare_host == dom or bare_host.endswith("." + dom):
-                domain_strip = params
-                break
-        kept = []
-        for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True):
-            if k.lower().startswith("utm_"):
-                continue
-            if k.lower() in _GLOBAL_TRACKING or k in domain_strip:
-                continue
-            kept.append((k, v))
-        query = urllib.parse.urlencode(kept)
-        cleaned = urllib.parse.urlunsplit((p.scheme.lower(), host, p.path, query, ""))
+        cleaned = strip_tracking(url)
 
         # Layer 2: per-site canonical identity
         if bare_host.endswith("reddit.com") or bare_host == "redd.it":
@@ -398,7 +534,12 @@ _AUTHWALL_MARKERS = (
 
 
 def fetch_linkedin_content(url):
-    url = _resolve_short_link(url) if urllib.parse.urlsplit(url).netloc.lower().endswith("lnkd.in") else url
+    if urllib.parse.urlsplit(url).netloc.lower().endswith("lnkd.in"):
+        resolved = _resolve_short_link(url)
+        if not resolved:
+            print(f"[linkedin] short link did not resolve: {url[:60]}")
+            return None
+        url = resolved
     try:
         page, final = _get(url, timeout=20, headers={"User-Agent": BROWSER_UA})
     except Exception as e:
@@ -454,6 +595,76 @@ def fetch_linkedin_content(url):
     text = "\n".join(parts)
     print(f"[linkedin] extracted ok: {final[:60]}")
     return text[:MAX_CONTENT]
+
+
+# ---------------------------------------------------------------------------
+# Links inside a saved post (decision 14, 2026-10): what the post points to
+# ---------------------------------------------------------------------------
+
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s<>\"'`]+", re.I)
+_BARE_SHORT_LINK_RE = re.compile(
+    r"(?<![\w./@-])((?:" + "|".join(re.escape(h) for h in sorted(_SHORTENER_HOSTS)) + r")/[A-Za-z0-9_-]+)",
+    re.I)
+_TRAILING_PUNCTUATION = ".,;:!?)]}>'\"*"
+
+
+def find_links(text):
+    """http(s) URLs in plain text, plus bare short links such as lnkd.in/abc
+    (LinkedIn shows them without a scheme), in the order they appear.
+    Trailing punctuation is dropped and repeats go."""
+    hits = [(m.start(), m.group(0).rstrip(_TRAILING_PUNCTUATION)) for m in _URL_IN_TEXT_RE.finditer(text or "")]
+    hits += [(m.start(), "https://" + m.group(1)) for m in _BARE_SHORT_LINK_RE.finditer(text or "")]
+    found = []
+    for _, link in sorted(hits):
+        if link not in found:
+            found.append(link)
+    return found
+
+
+def artifact_urls(text, own_url="", limit=10, max_short_links=5):
+    """What a saved post links to: the links in its extracted text, which for
+    LinkedIn and Reddit includes the top comments the extractors already
+    fetch. Short links are resolved hop by hop (_resolve_short_link), at most
+    max_short_links of them, and an unresolved one is left out. Every kept URL
+    passed blocked_url_reason; the item's own URL is skipped. Only the short
+    link hops touch the network."""
+    own = strip_tracking(own_url) if own_url else ""
+    out, short_links = [], 0
+    for link in find_links(text):
+        if len(out) >= limit:
+            break
+        if _bare_host(link) in _SHORTENER_HOSTS:
+            if short_links >= max_short_links:
+                continue
+            short_links += 1
+            target = _resolve_short_link(link)
+            if not target:
+                continue
+        elif blocked_url_reason(link):
+            continue
+        else:
+            target = link
+        clean = strip_tracking(target)
+        if clean and clean != own and clean not in out:
+            out.append(clean)
+    return out
+
+
+def container_page_reason(url):
+    """A feed or home page is never an item: saving it would make every later
+    save of the same page look like a duplicate (2026-09-03 decision). Mirrors
+    isContainerUrl in extension/shared.js; the server applies it to every
+    capture path, not only the extension. Returns the reason, or None."""
+    host = _bare_host(url)
+    try:
+        path = urllib.parse.urlsplit(url).path.rstrip("/") or "/"
+    except Exception:
+        return None
+    if ((host == "linkedin.com" or host.endswith(".linkedin.com")) and path in ("/", "/feed", "/mynetwork")) \
+            or ((host == "reddit.com" or host.endswith(".reddit.com")) and path in ("/", "/r/all", "/r/popular")) \
+            or (host == "news.ycombinator.com" and path in ("/", "/news", "/newest")):
+        return "A feed page, not a post: save the post's own link (on LinkedIn, the post menu's Copy link to post)"
+    return None
 
 
 # ---------------------------------------------------------------------------
