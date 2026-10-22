@@ -163,8 +163,12 @@ MIGRATIONS = (
 
 def _write_json_atomic(path, payload):
     tmp = path.with_name(path.name + ".tmp")   # knowledge.json.tmp, never knowledge.tmp
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.rename(path)
+    try:
+        tmp.write_text(json.dumps(payload, indent=2))
+        tmp.rename(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def run(base_dir, now=None, log=print):

@@ -96,6 +96,14 @@ class StartupTests(unittest.TestCase):
         self.assertTrue(any(l.startswith("[migrate] skipped: SyntaxError") for l in lines), lines)
         self.assertEqual(self.items()["https://example.org/decayed"]["state"], "archive")   # data untouched
 
+    def test_start_sweeps_temp_files_a_killed_writer_left(self):
+        for name in ("knowledge.json.4242.123456.tmp", "knowledge.html.4242.99.tmp", "knowledge.json.tmp"):
+            (self.app / name).write_text("{partial")
+        (self.app / "brief_sent.tmp").write_text("{}")   # the brief's own, not the server's
+        self.start_and_stop()
+        left = sorted(p.name for p in self.app.glob("*.tmp"))
+        self.assertEqual(left, ["brief_sent.tmp"], left)
+
     def test_second_start_does_not_migrate_again(self):
         self.start_and_stop()
         first = (self.app / "knowledge.json").read_bytes()

@@ -55,6 +55,14 @@ class AtomicWriteTests(unittest.TestCase):
         self.assertNotEqual(temp_for["knowledge.html"], temp_for["knowledge.json"],
                             "knowledge.html and knowledge.json are written through the same temp file")
 
+    def test_a_failed_write_leaves_no_temp_file(self):
+        def full_disk(self_path, target):
+            raise OSError(28, "No space left on device")
+        with mock.patch.object(Path, "rename", full_disk):
+            with self.assertRaises(OSError):
+                server._save_data({"items": []})
+        self.assertEqual(list(self.dir.glob("*.tmp")), [], "a failed write left its temp file behind")
+
     def test_concurrent_page_and_data_writes_keep_the_data_intact(self):
         data = {"items": [{"url": f"https://a.dev/{n}", "title": "t" * 200} for n in range(50)]}
         page = "<html>" + "x" * 50_000 + "</html>"

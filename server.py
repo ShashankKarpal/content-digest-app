@@ -156,8 +156,35 @@ def _atomic_write_text(path, text):
     racing a data write could rename the page over the knowledge base
     (review, 2026-10)."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(text)
-    tmp.rename(path)
+    try:
+        tmp.write_text(text)
+        tmp.rename(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)   # a full disk must not leave stray copies
+        raise
+
+
+# Temp names this server and migrations.py write. A writer killed mid-write
+# (a deploy restart lands mid-write now and then) leaves one behind.
+_STRAY_TMP_RE = re.compile(r"^[\w.-]+\.\d+\.\d+\.tmp$")
+_MIGRATION_TMP_NAMES = ("knowledge.json.tmp", "migrations.json.tmp")
+
+
+def _sweep_stray_temp_files():
+    """Remove temp files left by a killed writer. Called at start-up before
+    any writer runs, so none of them can be live. Other files are left alone
+    (daily_brief.py writes its own brief_sent.tmp)."""
+    removed = 0
+    for p in BASE_DIR.glob("*.tmp"):
+        if _STRAY_TMP_RE.match(p.name) or p.name in _MIGRATION_TMP_NAMES:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        print(f"[startup] removed {removed} stray temp file(s)", flush=True)
+    return removed
 
 
 def _write_html(text):
@@ -1668,6 +1695,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     BASE_DIR.mkdir(exist_ok=True)
+    _sweep_stray_temp_files()
     try:
         # One-time data migrations (backup first, marker in the data folder).
         # Imported here, not at the top: the host's deploy check compiles
