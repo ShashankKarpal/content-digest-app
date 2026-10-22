@@ -3,53 +3,31 @@
 Content Digest: Morning Brief
 Sends a daily email summary of items saved in the last 24 hours.
 Runs at 7am Dubai time via LaunchAgent.
+
+Slim since decision 14 (2026-09-30): yesterday's new saves (title, category,
+a two-line summary, the link) and the host-health warning. Nothing else: the
+backlog resurfacing, the Act / Later / Archive links and the weekly loop line
+are retired.
 """
 
-import hmac
 import json
 import smtplib
 import sys
-from collections import Counter, defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from urllib.parse import quote
 
 APP_DIR = Path(__file__).parent
 CONFIG_FILE = APP_DIR / "config.json"
 KNOWLEDGE_FILE = APP_DIR / "knowledge.json"
 LOG_FILE = APP_DIR / "daily_brief.log"
-SECRETS_FILE = APP_DIR / "secrets.json"
-RESURFACE_FILE = APP_DIR / "resurface.json"
 LAST_RENDER_FILE = APP_DIR / "brief_last.html"
-TRIAGE_LOG_FILE = APP_DIR / "triage_log.jsonl"       # written by server.py, one line per state change
-LOOPCHECK_FILE = APP_DIR / "loopcheck-history.txt"   # one row per weekly rollup
 CLIENTS_FILE = APP_DIR / "clients.json"              # written by server.py: last authenticated contact per client
 HOST_HEALTH_STALE_HOURS = 48                         # brief warns when saves or client contact stop for this long
-CONTACT_WINDOW_HOURS = 24                            # a resurfacing only counts as a strike if a client reached the server today
+SUMMARY_CHARS = 200                                  # about two lines of a mail client
 
 DUBAI_OFFSET = timezone(timedelta(hours=4))
-
-# Measurement phase (D6, 2026-09-05). The weekly loop check compares against the
-# v0.5 baseline and subtracts days when capture or triage was known to be down,
-# so a flat week is never mistaken for user behaviour. Dates are inclusive.
-MEASUREMENT_BASELINE = date(2026, 8, 17)
-MEASUREMENT_EXCLUSIONS = (
-    (date(2026, 8, 16), date(2026, 8, 24)),   # menu bar client down
-    (date(2026, 8, 26), date(2026, 8, 28)),   # phone off the private network
-    (date(2026, 8, 31), date(2026, 8, 31)),   # server host offline
-)
-
-CATEGORY_ORDER = ["News", "Work", "Learning", "Ideas", "Entertainment"]
-
-# Resurfacing (feature 1): every brief pulls up to RESURFACE_MAX items back out
-# of the backlog with one-tap triage links. Pure arithmetic scorer by design:
-# the M1 has no RAM headroom for model calls (audit 2026-08-17, addendum A4).
-RESURFACE_MAX = 3
-RESURFACE_COOLDOWN_DAYS = 5   # do not nag about the same item on consecutive days
-RESURFACE_STRIKES = 3         # after 3 ignored resurfacings, decay archives it
-TRIAGE_EXPIRY_HOURS = 72      # signed links go stale after 3 days
 
 
 def log(message):
@@ -93,123 +71,15 @@ def filter_last_24h(items):
     return recent
 
 
-def load_auth_token():
+def _parse_iso(value):
     try:
-        token = json.loads(SECRETS_FILE.read_text()).get("auth_token", "")
-        return "" if token in ("NEW_TOKEN", "YOUR_TOKEN_HERE") else token
-    except Exception:
-        return ""
-
-
-def load_resurface():
-    try:
-        return json.loads(RESURFACE_FILE.read_text()) if RESURFACE_FILE.exists() else {}
-    except Exception:
-        return {}
-
-
-def _parse_saved_at(item):
-    try:
-        t = datetime.fromisoformat(item.get("saved_at", ""))
+        t = datetime.fromisoformat(value)
     except (ValueError, TypeError):
         return None
     return t.replace(tzinfo=DUBAI_OFFSET) if t.tzinfo is None else t
 
 
-def _sign_triage(token, url, state, expires):
-    """Mirror of server.py _sign_triage; keep them identical."""
-    msg = f"{url}|{state}|{expires}".encode()
-    return hmac.new(token.encode(), b"triage-v1:" + msg, "sha256").hexdigest()
-
-
-def triage_link(base, token, url, state, expires):
-    sig = _sign_triage(token, url, state, expires)
-    return f"{base}/triage?u={quote(url, safe='')}&s={state}&e={expires}&sig={sig}"
-
-
-def pick_resurfaced(items, resurface, now, limit=RESURFACE_MAX):
-    """Pure-arithmetic backlog selection: score = age_days * relevance,
-    act-marked items first, at most one item per category while choice lasts.
-    Skips items saved in the last 24h (they are in the new-saves section),
-    items on resurface cooldown, and items already at the strike limit.
-    Shared with the /view triage deck (server.py imports this; limit=10 there)
-    so the brief and the deck rank from one scorer and one fatigue ledger."""
-    cutoff_24h = now - timedelta(hours=24)
-    cands = []
-    for it in items:
-        st = it.get("state", "")
-        if st == "archive":
-            continue
-        saved = _parse_saved_at(it)
-        if saved is None or saved >= cutoff_24h:
-            continue
-        r = resurface.get(it["url"], {})
-        if st == "" and r.get("count", 0) >= RESURFACE_STRIKES:
-            continue  # decay will archive it; stop nagging
-        last = r.get("last")
-        if last and st != "act":
-            try:
-                last_dt = datetime.fromisoformat(last)
-                if last_dt.tzinfo is None:
-                    last_dt = last_dt.replace(tzinfo=DUBAI_OFFSET)
-                if (now - last_dt).days < RESURFACE_COOLDOWN_DAYS:
-                    continue
-            except ValueError:
-                pass
-        age_days = max((now - saved).days, 1)
-        score = age_days * int(it.get("relevance", 3) or 3)
-        cands.append((st == "act", score, it))
-    cands.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    picked, seen_cats = [], set()
-    for _, _, it in cands:
-        if len(picked) >= limit:
-            break
-        if it.get("category") in seen_cats:
-            continue
-        picked.append(it)
-        seen_cats.add(it.get("category"))
-    for _, _, it in cands:  # fill remaining slots if diversity left gaps
-        if len(picked) >= limit:
-            break
-        if it not in picked:
-            picked.append(it)
-    return picked
-
-
-def aged_out_last_24h(items, now):
-    cutoff = now - timedelta(hours=24)
-    out = []
-    for i in items:
-        ts = i.get("auto_archived_at")
-        if not ts:
-            continue
-        try:
-            t = datetime.fromisoformat(ts)
-        except ValueError:
-            continue
-        if t.tzinfo is None:
-            t = t.replace(tzinfo=DUBAI_OFFSET)
-        if t >= cutoff:
-            out.append(i)
-    return out
-
-
-def save_resurface(resurface, picked, now, strike=True):
-    """Stamp the cooldown for every resurfaced item. A strike toward
-    auto-archive is added only when `strike` is true: the brief passes False
-    on a day when no client reached the server, because a resurfacing the
-    user could not have answered is not an ignored one (D1, C10)."""
-    for it in picked:
-        r = resurface.setdefault(it["url"], {"count": 0})
-        if strike:
-            r["count"] = r.get("count", 0) + 1
-        r["last"] = now.isoformat()
-    tmp = RESURFACE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(resurface, indent=2))
-    tmp.rename(RESURFACE_FILE)
-
-
-# --- Host health (D1): the brief tells you when the loop is silently dead ----
+# --- Host health (D1): the brief tells you when the capture path is silently dead ---
 
 def load_clients():
     try:
@@ -225,12 +95,6 @@ def _latest(timestamps):
         if t is not None and (best is None or t > best):
             best = t
     return best
-
-
-def had_client_contact(clients, now, hours=CONTACT_WINDOW_HOURS):
-    """True when any client made an authenticated request within `hours`."""
-    last = _latest(clients.values()) if isinstance(clients, dict) else None
-    return last is not None and (now - last) <= timedelta(hours=hours)
 
 
 def host_health(items, clients, now, stale_hours=HOST_HEALTH_STALE_HOURS):
@@ -261,343 +125,79 @@ def format_host_health_line(hh):
             f'margin-top:10px;">{html_mod.escape(text)}</div>')
 
 
-# --- Weekly act-rate rollup (D6): the measurement instrument -----------------
-# Week counts come from triage_log.jsonl (dated, with the surface that made the
-# change); cumulative counts come from the items' current state. Both are
-# pure functions of their inputs so they can be unit tested.
+# --- The slim brief ---------------------------------------------------------
 
-def _parse_iso(value):
-    try:
-        t = datetime.fromisoformat(value)
-    except (ValueError, TypeError):
-        return None
-    return t.replace(tzinfo=DUBAI_OFFSET) if t.tzinfo is None else t
+def two_lines(text, limit=SUMMARY_CHARS):
+    """The summary cut to about two lines, at a word boundary."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:.-")
+    return cut + "..."
 
 
-def load_triage_log():
-    """Every well-formed line of triage_log.jsonl; bad lines are skipped."""
-    if not TRIAGE_LOG_FILE.exists():
-        return []
-    entries = []
-    for line in TRIAGE_LOG_FILE.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(entry, dict):
-            entries.append(entry)
-    return entries
+def _newest_first(items):
+    return sorted(items, key=lambda i: _parse_iso(i.get("saved_at")) or datetime.min.replace(tzinfo=DUBAI_OFFSET),
+                  reverse=True)
 
 
-def _excluded_days(start, end):
-    """Number of days in [start, end] (inclusive dates) that fall inside a
-    measurement exclusion window."""
-    count = 0
-    for lo, hi in MEASUREMENT_EXCLUSIONS:
-        a, b = max(lo, start), min(hi, end)
-        if a <= b:
-            count += (b - a).days + 1
-    return count
-
-
-def weekly_rollup(items, log_entries, now, days=7):
-    """Counts for the trailing `days`, plus cumulative state, plus clean-day
-    arithmetic since the baseline. Returns a plain dict."""
-    cutoff = now - timedelta(days=days)
-    week = {"act": 0, "revisit": 0, "manual_archive": 0, "auto_archived": 0,
-            "deck_skip": 0, "cleared": 0, "saves": 0}
-    by_source = Counter()
-    for entry in log_entries:
-        if not isinstance(entry, dict):
-            continue
-        at = _parse_iso(entry.get("at"))
-        if at is None or at < cutoff or at > now:
-            continue
-        to = entry.get("to", "")
-        source = entry.get("source", "api") or "api"
-        by_source[source] += 1
-        if to == "act":
-            week["act"] += 1
-        elif to == "revisit":
-            week["revisit"] += 1
-        elif to == "archive":
-            week["auto_archived" if source == "decay" else "manual_archive"] += 1
-        elif to == "skip":
-            week["deck_skip"] += 1
-        elif to == "":
-            week["cleared"] += 1
-    week["by_source"] = dict(by_source)
-
-    cumulative = {"total": len(items), "act": 0, "revisit": 0,
-                  "auto_archived": 0, "manual_archive": 0, "untouched": 0}
-    for item in items:
-        saved = _parse_saved_at(item)
-        if saved is not None and cutoff <= saved <= now:
-            week["saves"] += 1
-        state = item.get("state") or ""
-        if state == "act":
-            cumulative["act"] += 1
-        elif state == "revisit":
-            cumulative["revisit"] += 1
-        elif state == "archive":
-            cumulative["auto_archived" if item.get("auto_archived_at") else "manual_archive"] += 1
-        else:
-            cumulative["untouched"] += 1
-
-    today = now.date()
-    week_start = today - timedelta(days=days - 1)
-    week["days"] = days
-    week["excluded_days"] = _excluded_days(week_start, today)
-    week["clean_days"] = days - week["excluded_days"]
-
-    span = (today - MEASUREMENT_BASELINE).days + 1
-    excluded = _excluded_days(MEASUREMENT_BASELINE, today)
-    since = {"days": span, "excluded_days": excluded, "clean_days": span - excluded}
-
-    return {"week": week, "cumulative": cumulative, "since_baseline": since}
-
-
-def format_loopcheck_row(rollup, now):
-    """One line in the loopcheck-history.txt format: DATE | week | cumulative | notes."""
-    w, c, s = rollup["week"], rollup["cumulative"], rollup["since_baseline"]
-    sources = " ".join(f"{k}={v}" for k, v in sorted(w["by_source"].items())) or "none"
-    return (
-        f"{now.strftime('%Y-%m-%d')} | "
-        f"week: act={w['act']} revisit={w['revisit']} manual-archive={w['manual_archive']} "
-        f"deck-skip={w['deck_skip']} cleared={w['cleared']} auto-archived={w['auto_archived']} "
-        f"saves={w['saves']} clean-days={w['clean_days']}/{w['days']} | "
-        f"cumulative: act={c['act']} revisit={c['revisit']} manual-archive={c['manual_archive']} "
-        f"auto-archived={c['auto_archived']} untouched={c['untouched']} total={c['total']} | "
-        f"since {MEASUREMENT_BASELINE.isoformat()}: clean-days={s['clean_days']}/{s['days']}; "
-        f"changes by source: {sources}"
-    ).replace("\n", " ")
-
-
-def format_loop_line(rollup):
-    """One short line for the Monday brief. Numbers only, nothing user-written."""
+def format_email_body(items, send_date, health_html=""):
+    """HTML body: one card per new save (title linked to the item, category,
+    two-line summary), newest first, under a count and the host-health line."""
     import html as html_mod
-    w, c, s = rollup["week"], rollup["cumulative"], rollup["since_baseline"]
-    text = (
-        f"Loop this week: {w['act']} acted, {w['manual_archive']} archived by hand, "
-        f"{w['revisit']} marked later, {w['deck_skip']} deck skips, {w['auto_archived']} auto-archived, "
-        f"{w['saves']} saves, {w['clean_days']} of {w['days']} clean days. "
-        f"Since {MEASUREMENT_BASELINE.strftime('%d %b')}: act {c['act']}, later {c['revisit']}, "
-        f"hand-archived {c['manual_archive']} of {c['total']} items, {s['clean_days']} clean days."
-    )
-    return (f'<div style="font-size:12px;color:#9CA3AF;font-family:Arial,sans-serif;'
-            f'margin-top:10px;">{html_mod.escape(text)}</div>')
-
-
-def append_loopcheck_row(row):
-    """Append one row unless a row for the same date exists. Returns True when written."""
-    day = row[:10]
-    if LOOPCHECK_FILE.exists():
-        for line in LOOPCHECK_FILE.read_text().splitlines():
-            if line.startswith(day + " | "):
-                return False
-        with open(LOOPCHECK_FILE, "a") as f:
-            f.write(row + "\n")
-        return True
-    LOOPCHECK_FILE.write_text(
-        "# Content Digest loop-check history\n"
-        "# Format: DATE | week | cumulative | notes\n" + row + "\n")
-    return True
-
-
-def group_by_category(items):
-    grouped = defaultdict(list)
-    for item in items:
-        cat = item.get("category", "Ideas")
-        grouped[cat].append(item)
-    ordered = {}
-    for cat in CATEGORY_ORDER:
-        if cat in grouped:
-            ordered[cat] = grouped[cat]
-    for cat in grouped:
-        if cat not in ordered:
-            ordered[cat] = grouped[cat]
-    return ordered
-
-
-def format_resurfaced_section(picked, base, token, now):
-    """The triage section: up to RESURFACE_MAX backlog items, each with
-    one-tap signed Act / Later / Archive links."""
-    import html as html_mod
-    if not picked or not token:
-        return ""
-    expires = int(now.timestamp()) + TRIAGE_EXPIRY_HOURS * 3600
+    total = len(items)
     cards = ""
-    for item in picked:
-        title = html_mod.escape(item.get("title", "Untitled"))
-        summary = html_mod.escape(item.get("summary", ""))[:280]
-        url = item.get("url", "")
-        saved = _parse_saved_at(item)
-        age = f"{(now - saved).days}d ago" if saved else ""
-        cat = html_mod.escape(item.get("category", ""))
-        buttons = ""
-        for state, label, color in (
-                ("act", "Act", "#c83232"),
-                ("revisit", "Later", "#3B82F6"),
-                ("archive", "Archive", "#4B5563")):
-            link = triage_link(base, token, url, state, expires)
-            buttons += (f'<a href="{html_mod.escape(link)}" style="display:inline-block;'
-                        f'background:{color};color:#fff;padding:8px 18px;border-radius:6px;'
-                        f'font-size:13px;font-weight:bold;text-decoration:none;'
-                        f'font-family:Arial,sans-serif;margin-right:8px;">{label}</a>')
+    for item in _newest_first(items):
+        url = str(item.get("url", ""))
+        href = html_mod.escape(url if url.startswith(("http://", "https://")) else "#")
+        title = html_mod.escape(item.get("title") or url or "Untitled")
+        category = html_mod.escape(item.get("category", ""))
+        summary = html_mod.escape(two_lines(item.get("summary", "")))
         cards += f'''
-<div style="background:#16213e;border-left:3px solid #ff9f1c;border-radius:8px;padding:20px;margin:12px 0;font-family:Arial,sans-serif;">
-  <div style="font-size:15px;font-weight:bold;color:#F8FAFC;margin-bottom:4px;"><a href="{html_mod.escape(url)}" style="color:#F8FAFC;text-decoration:none;">{title}</a></div>
-  <div style="font-size:12px;color:#9CA3AF;margin-bottom:10px;">{cat} &nbsp;|&nbsp; saved {age}</div>
-  <div style="font-size:13px;color:#CBD5E1;line-height:1.6;margin-bottom:14px;">{summary}</div>
-  <div>{buttons}</div>
+<div style="background:#1E293B;border-left:3px solid #B17E51;border-radius:8px;padding:16px 18px;margin:12px 0;font-family:Arial,sans-serif;">
+  <a href="{href}" style="font-size:16px;font-weight:bold;color:#F8FAFC;text-decoration:none;">{title}</a>
+  <div style="font-size:12px;color:#9CA3AF;margin:6px 0 8px 0;">{category}</div>
+  <div style="font-size:13px;color:#CBD5E1;line-height:1.6;">{summary}</div>
 </div>'''
-    return f'''<div style="margin:28px 0 8px 0;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;color:#ff9f1c;letter-spacing:1px;">FROM YOUR BACKLOG ({len(picked)})</div>
-<div style="font-size:12px;color:#9CA3AF;font-family:Arial,sans-serif;margin-bottom:4px;">One tap decides. Links work on your tailnet and expire in {TRIAGE_EXPIRY_HOURS} hours.</div>
-{cards}'''
-
-
-def format_email_body(grouped, send_date, resurfaced_html="", aged_count=0, loop_html=""):
-    """Generate HTML email body matching the Content Digest dark theme."""
-    import html as html_mod
-
-    total = sum(len(items) for items in grouped.values())
-    save_word = "save" if total == 1 else "saves"
-
-    CAT_COLORS = {
-        "Work": "#F97316",
-        "Learning": "#3B82F6",
-        "Entertainment": "#A855F7",
-        "News": "#EF4444",
-        "Ideas": "#F97316",
-    }
-
-    # Header stats
-    cat_summary = ""
-    if total > 1:
-        cat_pills = ""
-        for cat, items in grouped.items():
-            color = CAT_COLORS.get(cat, "#F97316")
-            cat_pills += f'''<span style="display:inline-block;background:{color};color:#fff;padding:4px 12px;border-radius:12px;font-size:12px;margin:0 6px 6px 0;font-family:Arial,sans-serif;">{html_mod.escape(cat)}: {len(items)}</span>'''
-        cat_summary = f'''<div style="margin:16px 0 8px 0;">{cat_pills}</div>'''
-
-        all_tags = []
-        for items_list in grouped.values():
-            for item in items_list:
-                all_tags.extend(item.get("tags", []))
-        if all_tags:
-            top_tags = [tag for tag, _ in Counter(all_tags).most_common(6)]
-            tag_str = ", ".join(top_tags)
-            cat_summary += f'''<div style="color:#9CA3AF;font-size:12px;font-family:Arial,sans-serif;margin-top:8px;">Top tags: {html_mod.escape(tag_str)}</div>'''
-
-    # Build item cards
-    cards_html = ""
-    item_counter = 0
-    for category, items in grouped.items():
-        color = CAT_COLORS.get(category, "#F97316")
-        cards_html += f'''<div style="margin:24px 0 8px 0;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;color:#D1D5DB;letter-spacing:1px;">{html_mod.escape(category.upper())} ({len(items)})</div>'''
-
-        for item in items:
-            item_counter += 1
-            title = html_mod.escape(item.get("title", "Untitled"))
-            summary = html_mod.escape(item.get("summary", ""))
-            url = item.get("url", "")
-            url_escaped = html_mod.escape(url)
-            tags = item.get("tags", [])
-            relevance = item.get("relevance", 3)
-            action_points = item.get("action_points", [])
-            saved_at_str = item.get("saved_at", "")
-
-            time_str = ""
-            if saved_at_str:
-                try:
-                    saved_dt = datetime.fromisoformat(saved_at_str)
-                    if saved_dt.tzinfo is None:
-                        saved_dt = saved_dt.replace(tzinfo=DUBAI_OFFSET)
-                    time_str = saved_dt.strftime("%I:%M %p").lstrip("0")
-                except ValueError:
-                    pass
-
-            # Meta line
-            meta_parts = []
-            if time_str:
-                meta_parts.append(time_str)
-            rel_dots = "&#9679;" * relevance + "&#9675;" * (5 - relevance)
-            meta_parts.append(rel_dots)
-            meta_str = " &nbsp;|&nbsp; ".join(meta_parts)
-
-            # Tags
-            tag_pills = ""
-            for t in tags[:5]:
-                tag_pills += f'''<span style="display:inline-block;background:#374151;color:#D1D5DB;padding:3px 10px;border-radius:10px;font-size:11px;margin:0 4px 4px 0;">{html_mod.escape(t)}</span>'''
-
-            # Action points
-            ap_html = ""
-            if action_points:
-                ap_items = ""
-                for ap in action_points:
-                    ap_items += f'''<li style="color:#D1D5DB;font-size:13px;margin-bottom:4px;font-family:Arial,sans-serif;">{html_mod.escape(ap)}</li>'''
-                ap_html = f'''<div style="margin-top:12px;"><div style="color:{color};font-size:12px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">Action Pointers</div><ul style="margin:0;padding-left:20px;">{ap_items}</ul></div>'''
-
-            # Item state pill (act / revisit / archive from the review loop)
-            state = item.get("state", "")
-            STATE_STYLES = {
-                "act": ("#c83232", "ACT ON THIS"),
-                "revisit": ("#3B82F6", "REVISIT LATER"),
-            }
-            state_pill = ""
-            if state in STATE_STYLES:
-                s_color, s_label = STATE_STYLES[state]
-                state_pill = f'''<span style="display:inline-block;background:{s_color};color:#fff;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:bold;margin-right:8px;">{s_label}</span>'''
-
-            cards_html += f'''
-<div style="background:#1E293B;border-left:3px solid {color};border-radius:8px;padding:20px;margin:12px 0;font-family:Arial,sans-serif;">
-  <div style="font-size:16px;font-weight:bold;color:#F8FAFC;margin-bottom:4px;">{title}</div>
-  <div style="font-size:12px;color:#9CA3AF;margin-bottom:12px;">
-    {state_pill}<span style="display:inline-block;background:{color};color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;margin-right:8px;">{html_mod.escape(category)}</span>
-    {meta_str}
-  </div>
-  <div style="font-size:13px;color:#CBD5E1;line-height:1.6;margin-bottom:12px;">{summary}</div>
-  {ap_html}
-  <div style="margin-top:12px;">{tag_pills}</div>
-  <div style="margin-top:14px;">
-    <a href="{url_escaped}" style="display:inline-block;background:{color};color:#fff;padding:8px 18px;border-radius:6px;font-size:13px;font-weight:bold;text-decoration:none;font-family:Arial,sans-serif;">Read Article &#8594;</a>
-  </div>
-</div>'''
-
-    body = f'''<!DOCTYPE html>
+    return f'''<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background-color:#0F172A;">
 <div style="max-width:640px;margin:0 auto;padding:24px 16px;background-color:#0F172A;">
-
-  <div style="text-align:center;margin-bottom:24px;">
+  <div style="text-align:center;margin-bottom:20px;">
     <div style="font-size:28px;font-weight:bold;color:#F97316;font-family:Arial,sans-serif;">Content Digest</div>
     <div style="font-size:14px;color:#9CA3AF;font-family:Arial,sans-serif;margin-top:4px;">{send_date.strftime("%A, %B %d, %Y")}</div>
   </div>
-
-  <div style="background:#1E293B;border-radius:12px;padding:20px;text-align:center;margin-bottom:24px;">
-    <div style="font-size:36px;font-weight:bold;color:#F8FAFC;font-family:Arial,sans-serif;">{total}</div>
-    <div style="font-size:14px;color:#9CA3AF;font-family:Arial,sans-serif;">{save_word} in the last 24 hours</div>
-    {cat_summary}
-    {f'<div style="font-size:12px;color:#6B7280;font-family:Arial,sans-serif;margin-top:10px;">{aged_count} item{"" if aged_count == 1 else "s"} aged out of the backlog automatically</div>' if aged_count else ''}
-    {loop_html}
+  <div style="background:#1E293B;border-radius:12px;padding:16px;text-align:center;margin-bottom:12px;">
+    <div style="font-size:15px;color:#F8FAFC;font-family:Arial,sans-serif;">{total} new {"save" if total == 1 else "saves"} in the last 24 hours</div>
+    {health_html}
   </div>
-
-  {resurfaced_html}
-
-  {cards_html}
-
-  <div style="text-align:center;margin-top:32px;padding-top:20px;border-top:1px solid #374151;">
-    <div style="font-size:11px;color:#6B7280;font-family:Arial,sans-serif;">Sent by Content Digest, locally from your Mac.</div>
-  </div>
-
+  {cards}
 </div>
 </body>
 </html>'''
-    return body
+
+
+def format_empty_email_body(send_date, total_items, health_html=""):
+    """HTML body when nothing was saved in the last 24 hours."""
+    date_str = send_date.strftime("%A, %B %d, %Y")
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background-color:#0F172A;font-family:Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:24px 16px;background-color:#0F172A;">
+  <div style="text-align:center;margin-bottom:24px;">
+    <div style="font-size:24px;font-weight:bold;color:#F97316;">Content Digest</div>
+    <div style="font-size:14px;color:#9CA3AF;margin-top:4px;">{date_str}</div>
+  </div>
+  <div style="background:#1E293B;border-radius:12px;padding:24px;text-align:center;">
+    <div style="font-size:18px;color:#F1F5F9;font-weight:bold;margin-bottom:12px;">No new saves in the last 24 hours</div>
+    <div style="font-size:14px;color:#9CA3AF;line-height:1.6;">Your knowledge base has <strong style="color:#F97316;">{total_items}</strong> items.</div>
+    {health_html}
+  </div>
+</div>
+</body>
+</html>"""
 
 
 def send_email(config, subject, body):
@@ -616,108 +216,37 @@ def send_email(config, subject, body):
         server.send_message(msg)
 
 
-def format_empty_email_body(send_date, total_items, loop_html=""):
-    """HTML body when no items saved in last 24h."""
-    date_str = send_date.strftime("%A, %B %d, %Y")
-    return f"""<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:0;background-color:#0F172A;font-family:Arial,sans-serif;">
-<div style="max-width:640px;margin:0 auto;padding:24px 16px;background-color:#0F172A;">
-  <div style="text-align:center;margin-bottom:24px;">
-    <div style="font-size:24px;font-weight:bold;color:#F97316;">Content Digest</div>
-    <div style="font-size:14px;color:#9CA3AF;margin-top:4px;">{date_str}</div>
-  </div>
-  <div style="background:#1E293B;border-radius:12px;padding:24px;text-align:center;">
-    <div style="font-size:18px;color:#F1F5F9;font-weight:bold;margin-bottom:12px;">No new saves in the last 24 hours</div>
-    <div style="font-size:14px;color:#9CA3AF;line-height:1.6;">Your knowledge base has <strong style="color:#F97316;">{total_items}</strong> total items. Save something today to keep building.</div>
-    {loop_html}
-  </div>
-  <div style="text-align:center;margin-top:24px;font-size:12px;color:#64748B;">
-    Sent daily at 7:00 AM Dubai time
-  </div>
-</div>
-</body>
-</html>"""
-
-
-def run_weekly(dry_run):
-    """`daily_brief.py --weekly [--dry-run]`: print the rollup row and append it
-    to loopcheck-history.txt (once per day). Never sends mail."""
-    log("Weekly rollup started." + (" (dry run)" if dry_run else ""))
-    try:
-        now = datetime.now(DUBAI_OFFSET)
-        items = load_knowledge().get("items", [])
-        rollup = weekly_rollup(items, load_triage_log(), now)
-        row = format_loopcheck_row(rollup, now)
-        print(row)
-        if dry_run:
-            log("Dry run: row rendered, nothing written.")
-            return 0
-        written = append_loopcheck_row(row)
-        log("Rollup row " + ("appended to" if written else "already present in")
-            + f" {LOOPCHECK_FILE.name}.")
-        return 0
-    except Exception as e:
-        log(f"ERROR: {type(e).__name__}: {e}")
-        return 1
-
-
 def main():
     dry_run = "--dry-run" in sys.argv
     if "--weekly" in sys.argv:
-        return run_weekly(dry_run)
+        # The weekly loop check was retired with triage (decision 14). Exit
+        # without sending, so an old caller of --weekly never mails a brief.
+        log("The weekly loop check is retired; nothing to do.")
+        return 0
     log("Daily brief started." + (" (dry run)" if dry_run else ""))
     try:
         config = load_config()
-        data = load_knowledge()
-        all_items = data.get("items", [])
+        all_items = load_knowledge().get("items", [])
         recent = filter_last_24h(all_items)
         send_date = datetime.now(DUBAI_OFFSET)
 
-        token = load_auth_token()
-        base = config.get("server_base", "http://localhost:7778")
-        resurface = load_resurface()
-        picked = pick_resurfaced(all_items, resurface, send_date) if token else []
-        aged = aged_out_last_24h(all_items, send_date)
-        resurfaced_html = format_resurfaced_section(picked, base, token, send_date)
-
-        # Host health (D1): warn when saves or client contact have stopped, and
-        # withhold strikes on a day no client could have answered.
-        clients = load_clients()
-        contact_today = had_client_contact(clients, send_date)
+        # Host health (D1): warn when saves or client contact have stopped.
         health_html = ""
         try:
-            hh = host_health(all_items, clients, send_date)
+            hh = host_health(all_items, load_clients(), send_date)
             health_html = format_host_health_line(hh)
             if hh["stale"]:
                 log(f"Host health stale: save gap {hh['save_gap_hours']} h, contact gap {hh['contact_gap_hours']} h.")
         except Exception as e:
             log(f"Host health skipped: {type(e).__name__}: {e}")
 
-        # Monday: the weekly loop check rides the brief. A rollup failure must
-        # never stop the brief, so it is fenced off on its own.
-        loop_html, loop_row = "", None
-        if send_date.weekday() == 0:
-            try:
-                rollup = weekly_rollup(all_items, load_triage_log(), send_date)
-                loop_html = format_loop_line(rollup)
-                loop_row = format_loopcheck_row(rollup, send_date)
-            except Exception as e:
-                log(f"Weekly rollup skipped: {type(e).__name__}: {e}")
-
-        if recent or picked or aged:
-            grouped = group_by_category(recent)
-            parts = [f"{len(recent)} saves"]
-            if picked:
-                parts.append(f"{len(picked)} to triage")
-            subject = f"Content Digest, {send_date.strftime('%A %B %d')}: " + ", ".join(parts)
-            body = format_email_body(grouped, send_date,
-                                     resurfaced_html=resurfaced_html,
-                                     aged_count=len(aged), loop_html=health_html + loop_html)
+        day = send_date.strftime("%A %B %d")
+        if recent:
+            subject = f"Content Digest, {day}: {len(recent)} {'save' if len(recent) == 1 else 'saves'}"
+            body = format_email_body(recent, send_date, health_html)
         else:
-            subject = f"Content Digest, {send_date.strftime('%A %B %d')}: no new saves"
-            body = format_empty_email_body(send_date, len(all_items), loop_html=health_html + loop_html)
+            subject = f"Content Digest, {day}: no new saves"
+            body = format_empty_email_body(send_date, len(all_items), health_html)
 
         try:
             LAST_RENDER_FILE.write_text(body)
@@ -725,25 +254,11 @@ def main():
             pass
 
         if dry_run:
-            log(f"Dry run: rendered {len(recent)} saves, {len(picked)} resurfaced, "
-                f"{len(aged)} aged out. Wrote {LAST_RENDER_FILE.name}; nothing sent.")
-            if loop_row:
-                log(f"Dry run: weekly row would be: {loop_row}")
+            log(f"Dry run: rendered {len(recent)} saves. Wrote {LAST_RENDER_FILE.name}; nothing sent.")
             return 0
 
         send_email(config, subject, body)
-        if picked:
-            save_resurface(resurface, picked, send_date, strike=contact_today)
-            if not contact_today:
-                log("No client contact in the last 24 h: cooldown stamped, no strikes added.")
-        log(f"Sent brief with {len(recent)} items, {len(picked)} resurfaced, "
-            f"{len(aged)} aged out, to {config['recipient']}.")
-        if loop_row:
-            try:
-                written = append_loopcheck_row(loop_row)
-                log("Weekly rollup row " + ("appended." if written else "already present."))
-            except Exception as e:
-                log(f"Weekly rollup row not written: {type(e).__name__}: {e}")
+        log(f"Sent brief with {len(recent)} items, to {config['recipient']}.")
         return 0
 
     except Exception as e:

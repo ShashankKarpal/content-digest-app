@@ -22,7 +22,6 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 from extractors import get_extractor, normalize_url
-from daily_brief import pick_resurfaced  # one scorer for brief and deck
 import migrations
 
 DATA_FILE = BASE_DIR / "knowledge.json"
@@ -41,19 +40,17 @@ except Exception:
     pass
 
 VALID_CATEGORIES = {"Work", "Learning", "Entertainment", "News", "Ideas"}
-VALID_STATES = {"act", "revisit", "archive", ""}
 RETRY_INTERVAL_HOURS = 6
 RETRY_FIRST_SWEEP_SECONDS = 600
 MAX_AUTO_RETRIES = 3
 
-# Auto-archive decay is OFF (decision 14, 2026-09-30): nothing archives an item
-# on its own any more, and migrations.py put back every item decay archived.
-RESURFACE_FILE = BASE_DIR / "resurface.json"
-# D6 (2026-09-05): every state change is appended here as one JSON line
-# (at, url, from, to, source) so the weekly loop check in daily_brief.py can
-# date each change and name the surface that made it. Runtime data, gitignored.
-TRIAGE_LOG_FILE = BASE_DIR / "triage_log.jsonl"
-STATE_SOURCES = {"triage-link", "deck", "view", "api", "decay"}
+# Decision 14 (2026-09-30): one-at-a-time triage and resurfacing are retired
+# (the brief's backlog items and signed links, the deck, the card-level
+# Act / Later / Archive controls, the fatigue ledger, the weekly loop line),
+# and auto-archive decay is off. migrations.py put back every item decay
+# archived. The state fields already on items stay as history; resurface.json,
+# triage_log.jsonl and loopcheck-history.txt stay on disk and are no longer
+# written.
 
 # D1 (2026-09-05): runtime watchdog. The server proves it is alive by writing
 # heartbeat.json every HEARTBEAT_SECONDS, and records the last authenticated
@@ -67,7 +64,7 @@ STARTED_AT = datetime.now(TZ).isoformat()
 HEARTBEAT_FILE = BASE_DIR / "heartbeat.json"
 CLIENTS_FILE = BASE_DIR / "clients.json"
 HEARTBEAT_SECONDS = 300
-KNOWN_CLIENTS = {"mac-client", "extension", "shortcut", "view", "triage-link", "brief"}
+KNOWN_CLIENTS = {"mac-client", "extension", "shortcut", "view", "brief"}
 
 # ---------------------------------------------------------------------------
 # Content quality gates. Three layers, because each one has caught real junk:
@@ -146,7 +143,8 @@ MAX_BODY_BYTES = 1_000_000     # cap on a POST body (extension captures are <= 2
 # clients working), so a retired path must be listed here: otherwise a button
 # on an old cached page would turn its item URL into a new save (red team,
 # 2026-10). A retired path answers 410 {"status": "retired"} and records nothing.
-RETIRED_POST_PATHS = frozenset()
+# /state and /deck/skip: the card-level triage buttons and the deck (decision 14).
+RETIRED_POST_PATHS = frozenset({"/state", "/deck/skip"})
 
 
 def _js(obj):
@@ -835,9 +833,6 @@ def process_url(url, content=None):
         is_processing = False
 
 
-DECK_MAX = 10
-resurface_lock = threading.Lock()
-triage_log_lock = threading.Lock()
 clients_lock = threading.Lock()
 
 
@@ -900,86 +895,6 @@ def health_snapshot():
     return {"ok": True, "processing": is_processing, "version": SERVER_VERSION,
             "started_at": STARTED_AT, "last_save_at": last_save,
             "last_client_contact_at": last_contact, "clients": clients, "failures": failures}
-
-
-def _log_state_change(url, old_state, new_state, source, now=None):
-    """Append one line to triage_log.jsonl. Never raises: the log is an
-    instrument, and losing a line must not fail the user's action."""
-    now = now or datetime.now(TZ)
-    entry = {"at": now.isoformat(), "url": url, "from": old_state or "",
-             "to": new_state, "source": source if source in STATE_SOURCES else "api"}
-    try:
-        with triage_log_lock, open(TRIAGE_LOG_FILE, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except Exception as e:
-        print(f"[triage-log] write failed: {type(e).__name__}: {e}")
-
-
-def _load_resurface():
-    try:
-        return json.loads(RESURFACE_FILE.read_text()) if RESURFACE_FILE.exists() else {}
-    except Exception:
-        return {}
-
-
-def get_deck(limit=DECK_MAX):
-    """Triage deck contents: same scorer and fatigue ledger as the brief, so
-    items the 07:00 brief resurfaced today are on cooldown and never reappear
-    in the same day's deck."""
-    now = datetime.now(TZ)
-    return pick_resurfaced(_load_data()["items"], _load_resurface(), now, limit=limit)
-
-
-def record_deck_skip(url):
-    """A skipped deck card counts as a resurfacing with no response: it stamps
-    the cooldown (tomorrow's brief will not repeat it) and adds a strike
-    toward auto-archive."""
-    now = datetime.now(TZ)
-    with resurface_lock:
-        resurface = _load_resurface()
-        r = resurface.setdefault(url, {"count": 0})
-        r["count"] = r.get("count", 0) + 1
-        r["last"] = now.isoformat()
-        tmp = RESURFACE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(resurface, indent=2))
-        tmp.rename(RESURFACE_FILE)
-    _log_state_change(url, "", "skip", "deck", now)
-
-
-def _sign_triage(url, state, expires):
-    """HMAC signature for one-tap triage links in the daily brief.
-    daily_brief.py carries the mirror implementation; keep them identical."""
-    msg = f"{url}|{state}|{expires}".encode()
-    return hmac.new(AUTH_TOKEN.encode(), b"triage-v1:" + msg, "sha256").hexdigest()
-
-
-def set_item_state(url, state, source="api"):
-    """Set act / revisit / archive on a saved item. `source` names the surface
-    that made the change (triage-link, deck, view, api) and is recorded on the
-    item and in triage_log.jsonl for the weekly loop check."""
-    if state not in VALID_STATES:
-        return False
-    if source not in STATE_SOURCES:
-        source = "api"
-    now = datetime.now(TZ)
-    with data_lock:
-        data = _load_data()
-        found = False
-        old_state = ""
-        for item in data["items"]:
-            if item["url"] == url:
-                old_state = item.get("state") or ""
-                item["state"] = state
-                item["state_changed_at"] = now.isoformat()
-                item["state_source"] = source
-                found = True
-                break
-        if found:
-            _save_data(data)
-            _write_html(build_html(data["items"]))
-    if found:
-        _log_state_change(url, old_state, state, source, now)
-    return found
 
 
 # ---------------------------------------------------------------------------
@@ -1045,11 +960,9 @@ def retry_loop():
             print(f"[retry] Sweep error: {type(e).__name__}: {e}")
 
 
-def build_html(items, failures=None, deck_urls=None):
+def build_html(items, failures=None):
     if failures is None:
         failures = _load_failures().get("items", [])
-    if deck_urls is None:
-        deck_urls = []
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1114,36 +1027,11 @@ def build_html(items, failures=None, deck_urls=None):
   .badge-ai {{ background: #c87a32; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
   .badge-storage {{ background: #6b32c8; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
   .badge-quality {{ background: #b8860b; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }}
-  .state-row {{ display: flex; gap: 6px; margin-top: 12px; }}
-  .state-row button {{ background: #1e1e1e; border: 1px solid #333; color: #888; padding: 4px 12px; border-radius: 14px; cursor: pointer; font-size: 11px; font-family: 'Montserrat', sans-serif; }}
-  .state-row button.st-act.on {{ background: #c83232; color: #fff; border-color: #c83232; font-weight: 600; }}
-  .state-row button.st-revisit.on {{ background: #3B82F6; color: #fff; border-color: #3B82F6; font-weight: 600; }}
-  .state-row button.st-archive.on {{ background: #444; color: #ddd; border-color: #555; font-weight: 600; }}
-  .item.archived {{ opacity: 0.55; }}
-  .state-pill {{ padding: 2px 8px; border-radius: 10px; font-size: 10px; margin-right: 8px; text-transform: uppercase; font-weight: 600; }}
-  .state-pill.act {{ background: #c83232; color: #fff; }}
-  .state-pill.revisit {{ background: #3B82F6; color: #fff; }}
-  .state-pill.archive {{ background: #444; color: #ccc; }}
   .ask-row {{ display: flex; gap: 8px; margin-bottom: 16px; }}
   .ask-row input {{ flex: 1; background: #1e1e1e; border: 1px solid #333; color: #e0e0e0; padding: 9px 14px; border-radius: 10px; font-size: 13px; outline: none; font-family: 'Montserrat', sans-serif; }}
   .ask-row input:focus {{ border-color: #b17e51; }}
   .ask-row button {{ background: #b17e51; border: none; color: #000; padding: 9px 18px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
   .ask-row button:disabled {{ opacity: 0.5; cursor: wait; }}
-  #review-btn {{ background: #1e1e1e; border: 1px solid #b17e51; color: #b17e51; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: 'Montserrat', sans-serif; }}
-  #review-btn:hover {{ background: #b17e51; color: #000; }}
-  .deck-overlay {{ display: none; position: fixed; inset: 0; background: rgba(10,10,20,0.96); z-index: 100; align-items: center; justify-content: center; padding: 16px; }}
-  .deck-card {{ background: #16213e; border: 1px solid #2a3a5e; border-radius: 16px; padding: 24px; max-width: 560px; width: 100%; max-height: 82vh; overflow-y: auto; }}
-  .deck-top {{ display: flex; justify-content: space-between; align-items: center; color: #888; font-size: 13px; margin-bottom: 14px; }}
-  .deck-close {{ background: none; border: none; color: #555; font-size: 22px; cursor: pointer; line-height: 1; }}
-  .deck-close:hover {{ color: #ff4444; }}
-  .deck-actions {{ display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; }}
-  .deck-actions button {{ flex: 1; min-width: 96px; padding: 13px 0; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; font-family: 'Montserrat', sans-serif; }}
-  .deck-act {{ background: #c83232; color: #fff; }}
-  .deck-later {{ background: #3B82F6; color: #fff; }}
-  .deck-archive {{ background: #4B5563; color: #fff; }}
-  .deck-skip {{ background: #1e1e1e; color: #888; border: 1px solid #333 !important; }}
-  .deck-key {{ color: #555; font-size: 11px; margin-top: 12px; text-align: center; }}
-  .deck-done {{ text-align: center; padding: 26px 10px; }}
   #ask-answer {{ display: none; background: #16213e; border: 1px solid #2a3a5e; border-radius: 12px; padding: 16px; margin-bottom: 18px; font-size: 13px; line-height: 1.7; color: #cbd5e1; white-space: pre-wrap; }}
   #ask-answer .ask-sources {{ margin-top: 10px; font-size: 12px; }}
   #ask-answer .ask-sources a {{ color: #ff9f1c; text-decoration: none; display: block; margin-top: 4px; }}
@@ -1165,13 +1053,6 @@ def build_html(items, failures=None, deck_urls=None):
   <button data-cat="Ideas">Ideas</button>
   <button data-cat="Entertainment">Entertainment</button>
   <button data-cat="Failed" class="failed-btn">Failed ({len(failures)})</button>
-  <select id="state-select">
-    <option value="active">Active (default)</option>
-    <option value="act">Act on this</option>
-    <option value="revisit">Revisit later</option>
-    <option value="archive">Archived</option>
-    <option value="all">Everything</option>
-  </select>
   <select id="sort-select">
     <option value="newest">Newest first</option>
     <option value="oldest">Oldest first</option>
@@ -1188,19 +1069,15 @@ def build_html(items, failures=None, deck_urls=None):
     <button class="s-active" data-mode="all">All fields</button>
     <button data-mode="title">Title only</button>
   </div>
-  <button id="review-btn" style="display:none" onclick="openDeck()">Review</button>
 </div>
-<div class="deck-overlay" id="deck-overlay"><div class="deck-card" id="deck-card"></div></div>
 <div id="items-container"></div>
 <div id="empty-state" style="display:none">No items saved yet. Add a URL to get started.</div>
 <script>
 var DATA = {_js(items)};
 var FAILURES = {_js(failures)};
-var DECK = {_js(deck_urls)};
 var currentFilter = "All";
 var currentSort = "newest";
 var currentSearch = "";
-var currentState = "active";
 var searchMode = "all";
 var searchDebounce;
 function escapeHtml(s) {{
@@ -1257,11 +1134,6 @@ function render() {{
   }}
   var items = DATA.filter(i => {{
     if (currentFilter !== "All" && i.category !== currentFilter) return false;
-    var st = i.state || "";
-    if (currentState === "active" && st === "archive") return false;
-    if (currentState === "act" && st !== "act") return false;
-    if (currentState === "revisit" && st !== "revisit") return false;
-    if (currentState === "archive" && st !== "archive") return false;
     if (!q) return true;
     if (searchMode === "title") return (i.title || "").toLowerCase().includes(q);
     return (i.title || "").toLowerCase().includes(q) ||
@@ -1286,36 +1158,15 @@ function render() {{
   container.innerHTML = items.map(item => {{
     const tags = (item.tags || []).map(t => `<span class="tag">${{escapeHtml(t)}}</span>`).join("");
     const date = formatDate(item.saved_at);
-    const st = item.state || "";
-    const statePill = st ? `<span class="state-pill ${{st}}">${{st === "act" ? "act on this" : st === "revisit" ? "revisit later" : "archived"}}</span>` : "";
-    const stateBtns = `<div class="state-row">
-        <button class="st-act${{st === "act" ? " on" : ""}}" onclick="setState(this, 'act')">Act</button>
-        <button class="st-revisit${{st === "revisit" ? " on" : ""}}" onclick="setState(this, 'revisit')">Later</button>
-        <button class="st-archive${{st === "archive" ? " on" : ""}}" onclick="setState(this, 'archive')">Archive</button>
-      </div>`;
-    return `<div class="item${{st === "archive" ? " archived" : ""}}" data-url="${{escapeHtml(item.url)}}">
+    return `<div class="item" data-url="${{escapeHtml(item.url)}}">
       <button class="dismiss" onclick="dismissItem(this)" title="Remove">&times;</button>
       <h3><a href="${{safeHref(item.url)}}" target="_blank" rel="noopener">${{escapeHtml(item.title)}}</a></h3>
-      <div class="meta">${{statePill}}<span class="cat-tag">${{item.category}}</span>${{date}}</div>
+      <div class="meta"><span class="cat-tag">${{escapeHtml(item.category)}}</span>${{date}}</div>
       <p class="summary">${{escapeHtml(item.summary)}}</p>
       ${{(item.action_points && item.action_points.length) ? `<div class="action-points"><strong style="color:#ff9f1c;font-size:13px;">Action Pointers</strong><ul style="margin-top:6px;padding-left:18px;color:#ccc;font-size:13px;line-height:1.8">${{item.action_points.map(a => `<li>${{escapeHtml(a)}}</li>`).join("")}}</ul></div>` : ""}}
       <div class="tags">${{tags}}</div>
-      ${{stateBtns}}
     </div>`;
   }}).join("");
-}}
-function setState(btn, state) {{
-  var card = btn.closest(".item");
-  var url = card.dataset.url;
-  var item = DATA.find(i => i.url === url);
-  var newState = (item && item.state === state) ? "" : state;
-  if (item) item.state = newState;
-  fetch("/state", {{
-    method: "POST",
-    headers: {{"Content-Type": "application/json"}},
-    body: JSON.stringify({{url: url, state: newState, source: "view"}})
-  }}).catch(e => console.warn("State sync failed:", e));
-  render();
 }}
 function askKB() {{
   var input = document.getElementById("ask-input");
@@ -1389,92 +1240,6 @@ function deleteFailure(btn) {{
     body: JSON.stringify({{url: url}})
   }}).catch(e => console.warn("Failure delete sync failed:", e));
 }}
-// --- Triage deck: one card at a time over the same scorer as the brief ---
-var deckPos = 0, deckTriaged = 0, deckSkipped = 0;
-function deckCurrent() {{
-  while (deckPos < DECK.length) {{
-    var it = DATA.find(i => i.url === DECK[deckPos]);
-    if (it && it.state !== "archive") return it;
-    deckPos++;
-  }}
-  return null;
-}}
-function openDeck() {{
-  deckPos = 0; deckTriaged = 0; deckSkipped = 0;
-  if (document.activeElement) document.activeElement.blur();
-  document.getElementById("deck-overlay").style.display = "flex";
-  renderDeck();
-}}
-function closeDeck() {{
-  document.getElementById("deck-overlay").style.display = "none";
-  render();
-}}
-function renderDeck() {{
-  var card = document.getElementById("deck-card");
-  var it = deckCurrent();
-  if (!it) {{
-    card.innerHTML = `<div class="deck-done">
-      <div style="font-size:36px;color:#ff9f1c;">&#10003;</div>
-      <h3 style="margin:10px 0;color:#fff;">Deck clear</h3>
-      <p style="color:#9CA3AF;font-size:14px;">${{deckTriaged}} triaged, ${{deckSkipped}} skipped. Nothing left to review today.</p>
-      <button style="margin-top:18px;padding:11px 26px;border:none;border-radius:10px;background:#b17e51;color:#000;font-weight:600;font-size:14px;cursor:pointer;font-family:'Montserrat',sans-serif;" onclick="closeDeck()">Done</button>
-    </div>`;
-    return;
-  }}
-  var ap = (it.action_points && it.action_points.length)
-    ? `<div style="margin-top:10px;"><strong style="color:#ff9f1c;font-size:13px;">Action Pointers</strong><ul style="margin-top:6px;padding-left:18px;color:#ccc;font-size:13px;line-height:1.8">${{it.action_points.map(a => `<li>${{escapeHtml(a)}}</li>`).join("")}}</ul></div>`
-    : "";
-  card.innerHTML = `
-    <div class="deck-top"><span>${{deckPos + 1}} of ${{DECK.length}} &nbsp;&middot;&nbsp; ${{DECK.length - deckPos - 1}} remaining</span><button class="deck-close" onclick="closeDeck()" title="Close">&times;</button></div>
-    <h3 style="font-size:17px;margin-bottom:6px;"><a href="${{safeHref(it.url)}}" target="_blank" rel="noopener" style="color:#fff;text-decoration:none;">${{escapeHtml(it.title)}}</a></h3>
-    <div class="meta"><span class="cat-tag">${{it.category}}</span>${{formatDate(it.saved_at)}}</div>
-    <p class="summary">${{escapeHtml(it.summary)}}</p>
-    ${{ap}}
-    <div class="deck-actions">
-      <button class="deck-act" onclick="deckResolve('act')">Act</button>
-      <button class="deck-later" onclick="deckResolve('revisit')">Later</button>
-      <button class="deck-archive" onclick="deckResolve('archive')">Archive</button>
-      <button class="deck-skip" onclick="deckResolve('skip')">Skip</button>
-    </div>
-    <div class="deck-key">a act &nbsp;&middot;&nbsp; l later &nbsp;&middot;&nbsp; x archive &nbsp;&middot;&nbsp; space skip &nbsp;&middot;&nbsp; esc close</div>`;
-}}
-function deckResolve(action) {{
-  var it = deckCurrent();
-  if (!it) return;
-  if (action === "skip") {{
-    deckSkipped++;
-    fetch("/deck/skip", {{
-      method: "POST",
-      headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{url: it.url}})
-    }}).catch(e => console.warn("Skip sync failed:", e));
-  }} else {{
-    it.state = action;
-    deckTriaged++;
-    fetch("/state", {{
-      method: "POST",
-      headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{url: it.url, state: action, source: "deck"}})
-    }}).catch(e => console.warn("State sync failed:", e));
-  }}
-  deckPos++;
-  renderDeck();
-}}
-document.addEventListener("keydown", e => {{
-  if (document.getElementById("deck-overlay").style.display !== "flex") return;
-  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
-  if (e.key === "Escape") {{ closeDeck(); return; }}
-  if (!deckCurrent() && (e.key === " " || e.key === "Enter")) {{ e.preventDefault(); closeDeck(); return; }}
-  if (e.key === "a") deckResolve("act");
-  else if (e.key === "l") deckResolve("revisit");
-  else if (e.key === "x") deckResolve("archive");
-  else if (e.key === " ") {{ e.preventDefault(); deckResolve("skip"); }}
-}});
-if (DECK.length > 0) {{
-  var rb = document.getElementById("review-btn");
-  rb.style.display = "";
-  rb.textContent = "Review (" + DECK.length + ")";
-}}
 document.querySelectorAll(".filters button").forEach(btn => {{
   btn.addEventListener("click", () => {{
     document.querySelectorAll(".filters button").forEach(b => b.classList.remove("active"));
@@ -1484,7 +1249,6 @@ document.querySelectorAll(".filters button").forEach(btn => {{
   }});
 }});
 document.getElementById("sort-select").addEventListener("change", e => {{ currentSort = e.target.value; render(); }});
-document.getElementById("state-select").addEventListener("change", e => {{ currentState = e.target.value; render(); }});
 document.getElementById("ask-btn").addEventListener("click", askKB);
 document.getElementById("ask-input").addEventListener("keydown", e => {{ if (e.key === "Enter") askKB(); }});
 document.getElementById("search-input").addEventListener("input", e => {{
@@ -1511,6 +1275,16 @@ render();
 </script>
 </body>
 </html>"""
+
+
+RETIRED_TRIAGE_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Content Digest</title></head>
+<body style="background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,sans-serif;padding:40px;max-width:600px;margin:0 auto;">
+<h2 style="color:#b17e51;">This link has been retired</h2>
+<p>Content Digest no longer asks you to triage saved items one at a time, so this
+link changes nothing. Everything you saved is in the knowledge base.</p>
+<p style="color:#666;font-size:13px;">You can close this tab.</p>
+</body></html>"""
 
 
 LOCKED_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
@@ -1581,44 +1355,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         path, _, query = self.path.partition("?")
         if path == "/triage":
-            # One-tap state links from the daily brief. The HMAC signature IS
-            # the credential (no cookie needed: mail clients have none), the
-            # expiry bounds replay, and the trusted-source guard above still
-            # applies, so links only work from the tailnet or home LAN.
-            import urllib.parse as _up
-            q = _up.parse_qs(query)
-            url = q.get("u", [""])[0]
-            state = q.get("s", [""])[0]
-            sig = q.get("sig", [""])[0]
-            try:
-                expires = int(q.get("e", ["0"])[0])
-            except ValueError:
-                expires = 0
-            code, msg = 200, ""
-            labels = {"act": "Act on this", "revisit": "Revisit later", "archive": "Archived"}
-            if not (AUTH_TOKEN and url and state in ("act", "revisit", "archive")):
-                code, msg = 400, "Invalid link."
-            elif time.time() > expires:
-                code, msg = 410, "This link has expired. Triage links are valid for 72 hours; use tomorrow's brief."
-            elif not hmac.compare_digest(sig.encode(), _sign_triage(url, state, expires).encode()):
-                code, msg = 403, "Invalid link signature."
-            elif not set_item_state(url, state, source="triage-link"):
-                code, msg = 404, "Item not found. It may have been deleted or merged."
-            if code == 200:
-                msg = f"Done: marked <b style='color:#ff9f1c;'>{labels[state]}</b>."
-                _touch_client("triage-link")  # a valid signed tap proves the user can reach the server
-            self.send_response(code)
+            # Act / Later / Archive links in briefs sent before decision 14.
+            # Triage is retired: the link changes nothing and says so, in a
+            # plain page rather than an error.
+            self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write((
-                "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
-                "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
-                "<title>Content Digest</title></head>"
-                "<body style='background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,sans-serif;"
-                "padding:40px;max-width:600px;margin:0 auto;'>"
-                f"<h2 style='color:#b17e51;'>Content Digest</h2><p>{msg}</p>"
-                "<p style='color:#666;font-size:13px;'>You can close this tab.</p>"
-                "</body></html>").encode())
+            self.wfile.write(RETIRED_TRIAGE_HTML.encode())
             return
         if path == "/view":
             if not self._cookie_ok():
@@ -1640,8 +1383,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _touch_client("view")
             try:
-                html = build_html(_load_data()["items"],
-                                  deck_urls=[i["url"] for i in get_deck()])
+                html = build_html(_load_data()["items"])
                 _write_html(html)
             except Exception as e:
                 print(f"[view] Rebuild failed ({e}), serving cached")
@@ -1732,7 +1474,7 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
         authed = self._authed()
 
-        is_ingest = (self.path not in ("/delete", "/retry", "/failures/delete", "/state", "/ask", "/deck/skip")
+        is_ingest = (self.path not in ("/delete", "/retry", "/failures/delete", "/ask")
                      and self.path not in RETIRED_POST_PATHS)
 
         # Durable inbox capture: record every incoming link before auth and fetch.
@@ -1794,25 +1536,6 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True}).encode())
             if url.startswith(("http://", "https://")):
                 threading.Thread(target=process_url, args=(url,), daemon=True).start()
-            return
-
-        if self.path == "/state":
-            url = body.get("url", "").strip()
-            state = body.get("state", "").strip().lower()
-            # The page says which surface it is (view or deck); anything else
-            # is an API caller. Never trust it for auth, only for the log.
-            source = str(body.get("source", "")).strip().lower()
-            if source not in ("view", "deck"):
-                source = "api"
-            ok = set_item_state(url, state, source=source)
-            self.wfile.write(json.dumps({"ok": ok}).encode())
-            return
-
-        if self.path == "/deck/skip":
-            url = body.get("url", "").strip()
-            if url:
-                record_deck_skip(url)
-            self.wfile.write(json.dumps({"ok": bool(url)}).encode())
             return
 
         if self.path == "/ask":

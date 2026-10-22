@@ -100,5 +100,45 @@ class RetiredPathTests(LiveServerCase):
         self.assertEqual(self.processed, [("https://example.org/new",)])
 
 
+def item_state():
+    return json.loads(server.DATA_FILE.read_text())["items"][0]["state"]
+
+
+class RetiredTriageTests(LiveServerCase):
+    """Decision 14: the card buttons, the deck and the emailed links are gone."""
+
+    def test_state_and_deck_skip_are_retired(self):
+        for path, body in (("/state", {"url": URL, "state": "act", "source": "view"}),
+                           ("/deck/skip", {"url": URL})):
+            status, answer = self.post(path, body)
+            self.assertEqual(self.processed, [], path)
+            self.assertEqual(self.inbox_urls(), [], path)
+            self.assertEqual((status, answer.get("status")), (410, "retired"), path)
+        self.assertEqual(item_state(), "")
+        self.assertFalse((Path(self.tmp.name) / "resurface.json").exists(), "the fatigue ledger was written")
+
+    def test_an_old_emailed_triage_link_says_retired_and_changes_nothing(self):
+        import hmac
+        import urllib.parse
+        expires = int(time.time()) + 3600
+        msg = f"{URL}|act|{expires}".encode()   # the pre-decision-14 signing scheme
+        sig = hmac.new(TOKEN.encode(), b"triage-v1:" + msg, "sha256").hexdigest()
+        conn = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+        conn.request("GET", f"/triage?u={urllib.parse.quote(URL, safe='')}&s=act&e={expires}&sig={sig}")
+        resp = conn.getresponse()
+        page = resp.read().decode()
+        conn.close()
+        self.assertEqual(item_state(), "", "an old triage link still changed the item")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("retired", page)
+
+    def test_the_knowledge_base_page_has_no_triage_controls(self):
+        page = server.build_html(json.loads(server.DATA_FILE.read_text())["items"], failures=[])
+        for gone in ("setState(", "openDeck(", "review-btn", "state-select", '"/state"', "/deck/skip"):
+            self.assertNotIn(gone, page)
+        self.assertIn("dismissItem(", page)   # delete stays
+        self.assertIn("ask-btn", page)        # Ask stays
+
+
 if __name__ == "__main__":
     unittest.main()

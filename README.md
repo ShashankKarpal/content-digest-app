@@ -24,7 +24,7 @@
 - Summarizes each item in 150 to 200 words with action pointers, using a local model.
 - Categorizes and tags every item automatically.
 - Answers plain-language questions about everything you have saved.
-- Emails a morning brief of new saves plus three backlog items with one-tap triage links.
+- Emails a slim morning brief of the last day's saves.
 - Keeps storage and summarization on your own machine: summaries and answers come from a local model only.
 
 ## Features
@@ -52,25 +52,19 @@
 ### Knowledge base
 
 - **Ask your knowledge base.** A question box over your own saved items, using local Ollama embeddings (`nomic-embed-text`) with keyword fallback, answering with cited sources.
-- **Item states.** Mark any card Act, Later, or Archive; states filter the base and appear in the brief.
+- **Everything in one view.** Every saved item shows; nothing is archived or hidden on its own.
 - **Search and sort.** Full-text search with date and time on every card.
 - **Persistent delete.** Removing an item removes it from storage, not just the view.
 - **LLM output validation.** Category whitelist, relevance bounds, and shape checks before anything is saved.
 
-### Close the loop
-
-- **Resurfacing brief.** Every morning email pulls up to 3 items back out of the backlog (age x relevance, act-marked first, category-diverse, 5-day cooldown per item).
-- **One-tap triage from the email.** Each resurfaced item carries HMAC-signed Act / Later / Archive links (72-hour expiry); one tap sets the state, no app open needed.
-- **Triage deck.** A Review button on the knowledge base opens one card at a time: Act, Later, Archive, or Skip, with keyboard shortcuts (a / l / x / space) and a completion state. Max 10 cards per run.
-- **One fatigue ledger.** The brief and the deck share a scorer and a cooldown store, so the same item is never pushed at you twice in a day.
-- **Runtime watchdog.** The server writes `heartbeat.json` every 5 minutes and records the last authenticated contact per client (`X-Client` header) in `clients.json`; `/health` reports version, start time, last save, last client contact and the failure count, and the server log carries a content-free line per request (method, path, status, client; never the URL or a token). The brief adds a "Host health" warning when saves or client contact stop for 48 hours, and on a day when no client reached the server a resurfacing stamps the cooldown but adds no strike toward auto-archive, because a prompt you could not have seen is not one you ignored. The Mac menu bar client polls `/health` every 15 minutes with no credentials, shows the result in its menu, and after two consecutive misses posts one banner and puts a `!` beside its icon until the server answers again.
-- **Weekly loop check.** Every state change is stamped with when and where it happened (email tap, deck, knowledge base page, decay) and logged to `triage_log.jsonl`. The Monday brief carries a one-line "Loop this week" rollup and appends a dated row to `loopcheck-history.txt`; `python3 daily_brief.py --weekly [--dry-run]` prints the same row on demand. Days when capture or triage was known to be down are subtracted, so a flat week is never mistaken for behaviour.
-
 ### Daily brief
 
-- **Morning email brief.** HTML digest sent on a LaunchAgent schedule.
-- **Item states as pills.** Archived items are excluded.
-- **Timezone-aware timestamps.**
+- **Slim morning email.** Sent at the time of the LaunchAgent that runs `daily_brief.py`: every save from the last 24 hours, newest first, each with its title (linked to the item), its category and a two-line summary. Nothing else: no backlog items and no triage links.
+- **Host-health warning.** The brief adds one warning line when saves or authenticated client contact stop for 48 hours.
+
+### Health
+
+- **Runtime watchdog.** The server writes `heartbeat.json` every 5 minutes and records the last authenticated contact per client (`X-Client` header) in `clients.json`; `/health` reports version, start time, last save, last client contact and the failure count, and the server log carries a content-free line per request (method, path, status, client; never the URL or a token). The Mac menu bar client polls `/health` every 15 minutes with no credentials, shows the result in its menu, and after two consecutive misses posts one banner and puts a `!` beside its icon until the server answers again.
 
 ### Model routing
 
@@ -113,13 +107,13 @@ Copy `secrets.example.json` to `secrets.json` and fill it in. `secrets.json` and
 
 Set the server address in `local_settings.py` (also gitignored) as `SERVER = "http://..."`. That file is read by the menu bar client only; the server ignores it, so an `OLLAMA_URL` there does nothing (Ollama is always `localhost:11434` on the machine that runs `server.py`). Never commit a LAN, tailnet, or VPN address.
 
-The daily brief reads SMTP settings from `config.json` (gitignored): `smtp_user`, `smtp_password`, `recipient`, `server_base`. Any other key is ignored; the send time is set by the LaunchAgent that runs `daily_brief.py`, not by the file. Set `server_base` there (for example your machine's tailnet address, `http://100.x.y.z:7778`) so the brief's one-tap triage links point at the server. **Tailnet dependency:** triage links are plain HTTP to that address and are HMAC-signed with a 72-hour expiry, but the tap only works from a device that can reach the server, meaning the same tailnet (Tailscale) or home LAN. On any other network the link times out; the item stays put and resurfaces again.
+The daily brief reads SMTP settings from `config.json` (gitignored): `smtp_user`, `smtp_password`, `recipient`. Any other key is ignored (an old `server_base` does nothing now that the brief carries no triage links); the send time is set by the LaunchAgent that runs `daily_brief.py`, not by the file. Act / Later / Archive links in briefs sent before the change open a short "this link has been retired" page and change nothing.
 
 Real credentials live only on local machines. Nothing in this repository holds a working secret.
 
 ## Network exposure
 
-The server binds `0.0.0.0:7778` but refuses any connection that does not come from loopback, an RFC1918 private range, or the Tailscale CGNAT block (100.64/10). Every POST endpoint, including `/delete`, `/state`, and `/ask`, requires the bearer token or a valid session cookie, and the knowledge base at `/view` is locked behind a one-time unlock per browser: the Locked page asks for the token once and sets a year-long session cookie (the token itself is never stored in the browser, and since 2026-09-05 the menu bar client opens plain `/view` rather than putting the token in the URL). Placeholder token values are treated as no token at all: the server rejects everything until a real random token is set.
+The server binds `0.0.0.0:7778` but refuses any connection that does not come from loopback, an RFC1918 private range, or the Tailscale CGNAT block (100.64/10). Every POST endpoint, including `/delete` and `/ask`, requires the bearer token or a valid session cookie, and the knowledge base at `/view` is locked behind a one-time unlock per browser: the Locked page asks for the token once and sets a year-long session cookie (the token itself is never stored in the browser, and since 2026-09-05 the menu bar client opens plain `/view` rather than putting the token in the URL). Placeholder token values are treated as no token at all: the server rejects everything until a real random token is set.
 
 Optional explicit bind (off by default): add `"bind_addresses": ["127.0.0.1", "100.x.y.z"]` to `config.json` and the server listens on exactly those addresses instead of `0.0.0.0`, so traffic from any other interface is refused by the kernel before the allowlist is even consulted. Each address is retried for up to two minutes at startup because a tailnet address can appear a few seconds after login; an address that never binds is skipped, and if none binds the server falls back to `0.0.0.0` with a warning so capture stays up. List your home LAN address too if the phone saves over Wi-Fi.
 
@@ -142,10 +136,11 @@ If the server cannot be reached at all (phone off the tailnet, host down), Short
 ## Project structure
 
 ```
-server.py         HTTP server: extraction, summarization, knowledge base, triage, decay
+server.py         HTTP server: extraction, summarization, knowledge base
 client.py         menu bar client (sends URLs to the server)
 extractors.py     per-source extractor registry
-daily_brief.py    morning email brief with backlog resurfacing
+daily_brief.py    slim morning email brief
+migrations.py     one-time data migrations, run by the server at start-up
 extension/        Chrome extension
 design/           brand assets, tokens, BRAND.md
 docs/             product intent, roadmap, decision log, worklog, audits
@@ -155,7 +150,7 @@ screenshots/      UI screenshots
 
 ## Screenshots
 
-**Knowledge base on Mac.** Every saved link lands here summarized, with action pointers, auto-tags, and Act / Later / Archive states.
+**Knowledge base on Mac.** Every saved link lands here summarized, with action pointers and auto-tags. (Screenshot taken before 2026-10; the Act / Later / Archive buttons it shows are retired.)
 
 ![Knowledge base on Mac](screenshots/knowledge-base-mac.png)
 

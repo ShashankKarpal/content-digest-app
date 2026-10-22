@@ -2,6 +2,22 @@
 
 ## System Architecture: Content Digest App (v0.5, measurement phase)
 
+### Triage and resurfacing retired; slim brief (2026-10, decision 14)
+
+- Removed: the brief's backlog items with signed Act / Later / Archive links,
+  `/state`, the triage deck and `/deck/skip`, the card-level controls and the
+  state filter on `/view`, the fatigue ledger (`resurface.json`), the triage
+  log (`triage_log.jsonl`), the weekly loop line and `loopcheck-history.txt`.
+  Those files stay on the host and are no longer written; the state fields on
+  items stay as history.
+- `GET /triage` (links in old briefs) answers a short "retired" page and
+  changes nothing. `POST /state` and `/deck/skip` answer 410 "retired"
+  (`RETIRED_POST_PATHS`); without that list the add catch-all at the end of
+  `do_POST` would save their item URLs again.
+- `daily_brief.py`: one card per save from the last 24 hours (title linked to
+  the item, category, a `two_lines()` summary of about 200 characters),
+  newest first, plus the host-health line. `--weekly` exits without sending.
+
 ### One-time migrations and decay off (2026-10, decision 14)
 
 - Auto-archive decay is gone: nothing archives an item on its own.
