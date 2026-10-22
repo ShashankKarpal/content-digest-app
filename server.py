@@ -39,7 +39,7 @@ try:
 except Exception:
     pass
 
-VALID_CATEGORIES = {"Work", "Learning", "Entertainment", "News", "Ideas"}
+VALID_CATEGORIES = {"Work", "Learning", "Entertainment", "News", "Ideas", "Tool"}
 RETRY_INTERVAL_HOURS = 6
 RETRY_FIRST_SWEEP_SECONDS = 600
 MAX_AUTO_RETRIES = 3
@@ -419,24 +419,26 @@ Otherwise return exactly this JSON:
   "title": "short descriptive title max 10 words",
   "summary": "detailed summary of 150-200 words explaining what this is about, key points, and why it matters",
   "action_points": ["specific action or takeaway 1", "specific action or takeaway 2", "specific action or takeaway 3"],
-  "category": "one of: Work, Learning, Entertainment, News, Ideas",
+  "category": "one of: Tool, Work, Learning, Entertainment, News, Ideas",
   "tags": ["tag1", "tag2", "tag3"],
   "relevance": 3
 }}
 
 CATEGORY DECISION RULES (apply in this order, stop at first match):
 
-1. NEWS: published in the last 30 days AND reports on a specific event, announcement, product launch, funding round, acquisition, policy change, or industry development. Time-sensitive.
+1. TOOL: a tool, app, repo, extension or product someone built and linked. The post's main point is the thing itself: an open-source repo, a browser extension, an app, a plugin, a CLI, a product shown by its maker.
 
-2. ENTERTAINMENT: primary purpose is enjoyment, not utility. Movies, TV, music, sports, games, humor, lifestyle, celebrity, food-for-fun, travel-for-fun.
+2. NEWS: published in the last 30 days AND reports on a specific event, announcement, product launch, funding round, acquisition, policy change, or industry development. Time-sensitive.
 
-3. LEARNING: teaches a specific skill or explains how something works at a technical level. Tutorials, step-by-step guides, deep-dives into protocols, frameworks, languages, tools, scientific concepts, technical primers.
+3. ENTERTAINMENT: primary purpose is enjoyment, not utility. Movies, TV, music, sports, games, humor, lifestyle, celebrity, food-for-fun, travel-for-fun.
 
-4. IDEAS: opinion, essay, framework, mental model, philosophy, strategy thinking, perspective pieces, thought leadership without a step-by-step.
+4. LEARNING: teaches a specific skill or explains how something works at a technical level. Tutorials, step-by-step guides, deep-dives into protocols, frameworks, languages, tools, scientific concepts, technical primers.
 
-5. WORK: ONLY use if the content is directly applicable to a specific professional workflow: sales tactics, GTM playbooks, B2B strategy, hiring, management, business operations, productivity workflows you would action this week.
+5. IDEAS: opinion, essay, framework, mental model, philosophy, strategy thinking, perspective pieces, thought leadership without a step-by-step.
 
-Pick exactly one. When in doubt between two, pick the one LATER in this list (News > Entertainment > Learning > Ideas > Work)."""
+6. WORK: ONLY use if the content is directly applicable to a specific professional workflow: sales tactics, GTM playbooks, B2B strategy, hiring, management, business operations, productivity workflows you would action this week.
+
+Pick exactly one. When in doubt between two, pick the one LATER in this list (Tool > News > Entertainment > Learning > Ideas > Work)."""
 
 
 def _parse_response(text):
@@ -1052,6 +1054,7 @@ def build_html(items, failures=None):
   <button data-cat="News">News</button>
   <button data-cat="Ideas">Ideas</button>
   <button data-cat="Entertainment">Entertainment</button>
+  <button data-cat="Tool">Tool</button>
   <button data-cat="Failed" class="failed-btn">Failed ({len(failures)})</button>
   <select id="sort-select">
     <option value="newest">Newest first</option>

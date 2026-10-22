@@ -53,6 +53,7 @@
 
 - **Ask your knowledge base.** A question box over your own saved items, using local Ollama embeddings (`nomic-embed-text`) with keyword fallback, answering with cited sources.
 - **Everything in one view.** Every saved item shows; nothing is archived or hidden on its own.
+- **Categories.** Work, Learning, News, Ideas, Entertainment, and Tool: a tool, app, repo, extension or product someone built and linked. One tap on a category filters the base.
 - **Search and sort.** Full-text search with date and time on every card.
 - **Persistent delete.** Removing an item removes it from storage, not just the view.
 - **LLM output validation.** Category whitelist, relevance bounds, and shape checks before anything is saved.

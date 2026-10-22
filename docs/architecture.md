@@ -33,6 +33,12 @@
   New fields: `restored_at` (when) and `state_history` (a list; the restore
   appends `{state, source, changed_at, auto_archived_at}`). The old fields
   stay on the item. A hand archive is left alone and counted before and after.
+- Category `Tool` (a tool, app, repo, extension or product someone built and
+  linked) is in the whitelist, first in the classifier's rules, and a filter
+  on `/view`. `2026-10-tool-category` moves the 48 items the 2026-09-30
+  review of the last 100 saves marked BUILT into it, matched by the SHA-256
+  of the stored URL (`TOOL_URL_SHA256`; hashes because this repo is public).
+  The old category goes into `category_history` (`{category, changed_at, by}`).
 
 ### Measurement instruments and hardening (2026-09-05)
 
