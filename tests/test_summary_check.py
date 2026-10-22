@@ -127,6 +127,24 @@ class AfterTheSaveTests(unittest.TestCase):
         self.assertIn("summary_checked", item, "no summary_checked on a new save")
         self.assertEqual(item["summary_checked"]["missing"], ["OpenAI", "9,999"])
 
+    def test_a_save_that_lost_the_race_starts_no_post_save_steps(self):
+        url = "https://news.ycombinator.com/item?id=3"
+        first = {"url": url, "title": "Saved first", "summary": "The first save's summary.",
+                 "category": "News", "tags": [], "state": "", "saved_at": "2026-10-22T10:00:00+04:00"}
+        slow_analysis = {"title": "Saved second", "summary": "Anthropic and OpenAI shipped it to 9,999 teams.",
+                         "action_points": [], "category": "News", "tags": [], "relevance": 3}
+
+        def analyze_while_another_save_lands(u, content):
+            server.DATA_FILE.write_text(json.dumps({"items": [first]}))   # the other request wins
+            return dict(slow_analysis)
+        with mock.patch.object(server, "analyze_with_ai", analyze_while_another_save_lands):
+            result = server.process_url(url)
+            time.sleep(0.5)   # time for any post-save thread to land
+        stored = json.loads(server.DATA_FILE.read_text())["items"]
+        self.assertEqual(len(stored), 1)
+        self.assertNotIn("summary_checked", stored[0], "the losing call checked the wrong summary onto the item")
+        self.assertEqual(result["status"], "already_saved")
+
     def test_a_broken_check_never_fails_the_save(self):
         def broken(*args, **kwargs):
             raise RuntimeError("check crashed")

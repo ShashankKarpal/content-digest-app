@@ -877,10 +877,17 @@ def process_url(url, content=None):
             }
             with data_lock:
                 fresh = _load_data()
-                if url not in [i["url"] for i in fresh["items"]]:
+                inserted = url not in [i["url"] for i in fresh["items"]]
+                if inserted:
                     fresh["items"].insert(0, item)
                     _save_data(fresh)
             _remove_failure(url)
+            if not inserted:
+                # Another save of the same link finished first (a double tap,
+                # a Retry during the sweep). Its own post-save steps describe
+                # the stored item; this call's summary must not overwrite them.
+                print(f"[skip] Saved meanwhile by another request: {url[:60]}")
+                return {"status": "already_saved", "url": url}
             _write_html(build_html(_load_data()["items"]))
             threading.Thread(target=embed_item, args=(item,), daemon=True).start()
             threading.Thread(target=enrich_item, args=(url, content, item["summary"]), daemon=True).start()
