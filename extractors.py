@@ -655,8 +655,9 @@ def artifact_urls(text, own_url="", limit=10, max_short_links=5):
     LinkedIn and Reddit includes the top comments the extractors already
     fetch. Short links are resolved hop by hop (_resolve_short_link), at most
     max_short_links of them, and an unresolved one is left out. Every kept URL
-    passed blocked_url_reason; the item's own URL is skipped. Only the short
-    link hops touch the network."""
+    passed blocked_url_reason; the item's own URL is skipped. Network: one
+    DNS lookup per link for the guard, plus the short link hops; no page is
+    fetched."""
     own = strip_tracking(own_url) if own_url else ""
     out, short_links = [], 0
     for link in find_links(text):

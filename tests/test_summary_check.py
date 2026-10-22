@@ -5,7 +5,9 @@ Run: python3 -m unittest tests.test_summary_check
 """
 
 import json
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -23,6 +25,33 @@ except Exception as e:  # pragma: no cover
 
 SOURCE = ("Anthropic released Claude Code 2.0 to 1,200 teams this week. The GitHub repo passed 60K stars, "
           "and the Notions clipboard trick drew a 3.5x speed-up. LLM costs fell 40% for the beta group.")
+
+NODE_DOM = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const els = {};
+const el = (id) => els[id] || (els[id] = {id, innerHTML: "", textContent: "", value: "", style: {},
+  dataset: {}, classList: {add() {}, remove() {}}, addEventListener() {}});
+global.document = {getElementById: el, querySelectorAll: () => ({forEach() {}}),
+  querySelector: () => null, addEventListener() {}, activeElement: null};
+global.window = {location: {reload() {}}};
+global.fetch = () => Promise.resolve({json: () => ({})});
+eval(src);
+process.stdout.write(el("items-container").innerHTML);
+"""
+
+
+def render_cards(page):
+    """The cards the knowledge base page's own script renders, split per card."""
+    script = page.split("<script>", 1)[1].split("</script>", 1)[0]
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "page.js").write_text(script)
+        (Path(d) / "dom.js").write_text(NODE_DOM)
+        out = subprocess.run(["node", str(Path(d) / "dom.js"), str(Path(d) / "page.js")],
+                             capture_output=True, text=True, timeout=30)
+    if out.returncode != 0:
+        raise AssertionError("the page script failed in node: " + out.stderr[-500:])
+    return [c for c in out.stdout.split('<div class="item"')[1:]]
 
 
 @unittest.skipIf(server is None, "server.py could not be imported here")
@@ -69,13 +98,21 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(self.check("", "")["ok"])
         self.assertEqual(self.check("Uses Kubernetes.", "")["missing"], ["Kubernetes"])
 
+    @unittest.skipIf(shutil.which("node") is None, "node is not installed")
     def test_the_card_shows_what_was_not_found(self):
-        flagged = {"url": "https://a.dev/x", "title": "t", "summary": "s", "category": "Work",
+        """Runs the page's own script in node against a minimal DOM and reads
+        the cards it renders: the strings alone are always in the script, so
+        only a render proves the note lands on the right card."""
+        flagged = {"url": "https://a.dev/x", "title": "Flagged", "summary": "s", "category": "Work",
+                   "saved_at": "2026-10-22T10:00:00+04:00",
                    "summary_checked": {"ok": False, "missing": ["OpenAI", "5,000"]}}
-        clean = dict(flagged, url="https://a.dev/y", summary_checked={"ok": True, "missing": []})
-        page = server.build_html([flagged, clean], failures=[])
-        self.assertIn("Not found in the source text: ", page)
-        self.assertIn("summary_checked", page)
+        clean = dict(flagged, url="https://a.dev/y", title="Clean",
+                     summary_checked={"ok": True, "missing": []})
+        cards = render_cards(server.build_html([flagged, clean], failures=[]))
+        self.assertEqual(len(cards), 2, cards)
+        by_title = {("Flagged" if "Flagged" in c else "Clean"): c for c in cards}
+        self.assertIn("Not found in the source text: OpenAI, 5,000", by_title["Flagged"])
+        self.assertNotIn("Not found in the source text", by_title["Clean"])
 
 
 @unittest.skipIf(server is None, "server.py could not be imported here")

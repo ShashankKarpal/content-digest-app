@@ -242,9 +242,13 @@ class SaveTests(unittest.TestCase):
             raise RuntimeError("resolver down")
         with mock.patch.object(server, "artifact_urls", broken, create=True):
             result = server.process_url("https://github.com/someone/tool")
-            time.sleep(0.3)
+            item = self.wait_for("summary_checked")
         self.assertEqual(result["status"], "saved")
         self.assertEqual([i["url"] for i in self.items()], ["https://github.com/someone/tool"])
+        # The other post-save step still lands, so the failure was caught
+        # inside the step rather than killing it.
+        self.assertIn("summary_checked", item, "a failed link lookup took the summary check down with it")
+        self.assertNotIn("artifact_urls", item)
 
 
 if __name__ == "__main__":
