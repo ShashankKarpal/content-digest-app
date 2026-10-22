@@ -4,6 +4,8 @@
 Each migration has an id and a function that changes the loaded items in
 place and returns its counts. run() applies the pending ones in order:
 
+0. reads and parses knowledge.json; if that fails nothing is applied and
+   no backup is made (the next start tries again),
 1. backs up knowledge.json and failures.json next to them as
    <name>.pre-migration-<YYYYmmdd-HHMMSS>.bak (the repo's *.bak rule keeps
    them out of git) and checks each copy is byte-identical before going on,
@@ -192,6 +194,17 @@ def run(base_dir, now=None, log=print):
         return {}
 
     try:
+        # Parse before backing up: a malformed file must not leave a new pair
+        # of backups at every restart (review, 2026-10).
+        data = json.loads(data_file.read_text())
+        items = data["items"]
+        if not isinstance(items, list):
+            raise ValueError("items is not a list")
+    except Exception as e:
+        log(f"[migrate] knowledge.json unreadable ({type(e).__name__}); nothing applied, no backup made")
+        return {}
+
+    try:
         stamp = now.strftime("%Y%m%d-%H%M%S")
         backups = []
         for name in BACKED_UP:
@@ -204,8 +217,6 @@ def run(base_dir, now=None, log=print):
                 raise OSError(f"backup of {name} does not match the original")
             backups.append(dst.name)
 
-        data = json.loads(data_file.read_text())
-        items = data.get("items", [])
         results = {}
         for mid, fn in pending:
             results[mid] = fn(items, now)
