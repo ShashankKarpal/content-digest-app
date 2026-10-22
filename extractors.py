@@ -132,10 +132,14 @@ _GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirect)
 
 
 def guarded_urlopen(req, timeout):
-    """urlopen that runs the SSRF guard on every redirect target before it is
-    followed. Plain urlopen followed up to 10 redirects unchecked, so a public
-    URL could bounce the server into its own network (review, 2026-10). The
-    first URL is the caller's to check."""
+    """urlopen that runs the SSRF guard on the first URL and on every redirect
+    target before requesting it. Plain urlopen followed up to 10 redirects
+    unchecked, so a public URL could bounce the server into its own network,
+    and some callers (normalize_url resolving a reddit share link) fetch
+    before process_url's own check runs (review, 2026-10)."""
+    reason = blocked_url_reason(req.full_url)
+    if reason:
+        raise urllib.error.URLError(f"refused: {reason}")
     return _GUARDED_OPENER.open(req, timeout=timeout)
 
 
@@ -284,8 +288,10 @@ def normalize_url(url):
 
         cleaned = strip_tracking(url)
 
-        # Layer 2: per-site canonical identity
-        if bare_host.endswith("reddit.com") or bare_host == "redd.it":
+        # Layer 2: per-site canonical identity. Exact hosts only: a loose
+        # endswith("reddit.com") sent lookalikes such as xreddit.com to the
+        # share-link fetch (review, 2026-10).
+        if bare_host == "reddit.com" or bare_host.endswith(".reddit.com") or bare_host == "redd.it":
             canonical = _canonical_reddit(cleaned)
             if canonical:
                 return canonical

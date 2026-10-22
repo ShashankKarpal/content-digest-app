@@ -1,11 +1,14 @@
-"""Every page fetch checks each redirect with the SSRF guard (review, 2026-10).
+"""Every page fetch checks the first URL and each redirect with the SSRF
+guard (review, 2026-10).
 
 Plain urlopen followed up to 10 redirects unchecked, so a public URL, or a
 short link the resolver had refused, could bounce the server into its own
-network. A real local server plays both a public site and an inside
-address: fake DNS sends every name to 127.0.0.1, so the guard treats the
-redirect target as internal. The first request (which callers check) is
-made; the one into the inside must never be.
+network; normalize_url could fetch a lookalike reddit host before any check.
+A real local server plays both a public site and an inside address. Fake DNS
+answers the guard's question (where does this name point?) with a public
+address for site.invalid and loopback for every other name, while every
+connection goes to the local server; connection attempts are recorded,
+because the attempt itself is the leak.
 Run: python3 -m unittest tests.test_redirect_guard
 """
 
@@ -57,9 +60,18 @@ class InsideRedirectCase(unittest.TestCase):
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Site)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.start_url = f"http://site.invalid:{self.httpd.server_address[1]}/start"
-        self._dns = mock.patch.object(socket, "getaddrinfo",
-                                      lambda host, *a, **k: REAL_GETADDRINFO("127.0.0.1", *a, **k))
+        self.port = self.httpd.server_address[1]
+        self.start_url = f"http://site.invalid:{self.port}/start"
+        self.connections = []
+        connections = self.connections
+
+        def split_dns(host, port, *args, **kwargs):
+            if port is None:   # the guard asking where a name points
+                return REAL_GETADDRINFO("93.184.216.34" if host == "site.invalid" else "127.0.0.1",
+                                        port, *args, **kwargs)
+            connections.append(host)   # a connection attempt: always the local server
+            return REAL_GETADDRINFO("127.0.0.1", port, *args, **kwargs)
+        self._dns = mock.patch.object(socket, "getaddrinfo", split_dns)
         self._dns.start()
 
     def tearDown(self):
@@ -76,6 +88,18 @@ class GuardedFetchTests(InsideRedirectCase):
             pass
         self.assertEqual(self.hits.count("/start"), 1)
         self.assertNotIn("/secret", self.hits, "an extractor fetch followed a redirect into the network")
+
+    def test_a_first_url_that_points_inside_is_never_requested(self):
+        try:
+            extractors._get(f"http://inside.invalid:{self.port}/secret", timeout=5)
+        except Exception:
+            pass
+        self.assertEqual(self.connections, [], "a fetch connected to an address inside the network")
+        self.assertEqual(self.hits, [])
+
+    def test_a_lookalike_reddit_host_is_not_fetched_while_normalizing(self):
+        extractors.normalize_url("http://xreddit.com/a")
+        self.assertEqual(self.connections, [], "normalize_url fetched a host that points inside")
 
     @unittest.skipIf(server is None, "server.py could not be imported here")
     def test_a_page_fetch_never_follows_a_redirect_inside(self):
