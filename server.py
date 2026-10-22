@@ -23,6 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 from extractors import get_extractor, normalize_url
 from daily_brief import pick_resurfaced  # one scorer for brief and deck
+import migrations
 
 DATA_FILE = BASE_DIR / "knowledge.json"
 FAILURES_FILE = BASE_DIR / "failures.json"
@@ -45,10 +46,8 @@ RETRY_INTERVAL_HOURS = 6
 RETRY_FIRST_SWEEP_SECONDS = 600
 MAX_AUTO_RETRIES = 3
 
-# Auto-archive decay (feature 3): untouched items age out of the active view.
-# News goes stale fastest; everything else gets three weeks. An item the brief
-# has resurfaced RESURFACE_STRIKES times with no response archives regardless
-# of age. Reversible: archived is a filter away, and the brief reports counts.
+# Auto-archive decay is OFF (decision 14, 2026-09-30): nothing archives an item
+# on its own any more, and migrations.py put back every item decay archived.
 RESURFACE_FILE = BASE_DIR / "resurface.json"
 # D6 (2026-09-05): every state change is appended here as one JSON line
 # (at, url, from, to, source) so the weekly loop check in daily_brief.py can
@@ -69,9 +68,6 @@ HEARTBEAT_FILE = BASE_DIR / "heartbeat.json"
 CLIENTS_FILE = BASE_DIR / "clients.json"
 HEARTBEAT_SECONDS = 300
 KNOWN_CLIENTS = {"mac-client", "extension", "shortcut", "view", "triage-link", "brief"}
-DECAY_TTL_DAYS = {"News": 7}
-DECAY_TTL_DEFAULT_DAYS = 21
-RESURFACE_STRIKES = 3
 
 # ---------------------------------------------------------------------------
 # Content quality gates. Three layers, because each one has caught real junk:
@@ -957,49 +953,6 @@ def _sign_triage(url, state, expires):
     return hmac.new(AUTH_TOKEN.encode(), b"triage-v1:" + msg, "sha256").hexdigest()
 
 
-def decay_sweep():
-    """Feature 3: auto-archive untouched items past their TTL, and items the
-    brief resurfaced RESURFACE_STRIKES times with no response. Runs at startup
-    and every retry cycle. Sets auto_archived_at so the brief can report it."""
-    now = datetime.now(TZ)
-    try:
-        resurface = json.loads(RESURFACE_FILE.read_text()) if RESURFACE_FILE.exists() else {}
-    except Exception:
-        resurface = {}
-    archived = 0
-    with data_lock:
-        data = _load_data()
-        for item in data["items"]:
-            if item.get("state"):
-                continue
-            reason = None
-            if resurface.get(item["url"], {}).get("count", 0) >= RESURFACE_STRIKES:
-                reason = "resurfaced without response"
-            else:
-                try:
-                    saved = datetime.fromisoformat(item.get("saved_at", ""))
-                except (ValueError, TypeError):
-                    continue
-                if saved.tzinfo is None:
-                    saved = saved.replace(tzinfo=TZ)
-                ttl = DECAY_TTL_DAYS.get(item.get("category"), DECAY_TTL_DEFAULT_DAYS)
-                if (now - saved).days >= ttl:
-                    reason = f"untouched past {ttl}d TTL"
-            if reason:
-                item["state"] = "archive"
-                item["auto_archived_at"] = now.isoformat()
-                item["state_changed_at"] = now.isoformat()
-                item["state_source"] = "decay"
-                archived += 1
-                _log_state_change(item["url"], "", "archive", "decay", now)
-        if archived:
-            _save_data(data)
-            _write_html(build_html(data["items"]))
-    if archived:
-        print(f"[decay] Auto-archived {archived} item(s)")
-    return archived
-
-
 def set_item_state(url, state, source="api"):
     """Set act / revisit / archive on a saved item. `source` names the surface
     that made the change (triage-link, deck, view, api) and is recorded on the
@@ -1078,7 +1031,6 @@ def retry_loop():
         time.sleep(delay)
         delay = RETRY_INTERVAL_HOURS * 3600
         try:
-            decay_sweep()
             retryable = [
                 f["url"] for f in _load_failures()["items"]
                 if f.get("error_type") in ("fetch", "ai") and f.get("retry_count", 0) < MAX_AUTO_RETRIES
@@ -1905,8 +1857,13 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     BASE_DIR.mkdir(exist_ok=True)
+    try:
+        # One-time data migrations (backup first, marker in the data folder).
+        # A failure is logged and never stops capture from starting.
+        migrations.run(BASE_DIR, now=datetime.now(TZ), log=lambda m: print(m, flush=True))
+    except Exception as e:
+        print(f"[migrate] skipped: {type(e).__name__}: {e}", flush=True)
     _self_heal_failures()
-    decay_sweep()
     threading.Thread(target=retry_loop, daemon=True).start()
     threading.Thread(target=backfill_embeddings, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()

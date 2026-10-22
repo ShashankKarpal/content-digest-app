@@ -25,7 +25,6 @@
 - Categorizes and tags every item automatically.
 - Answers plain-language questions about everything you have saved.
 - Emails a morning brief of new saves plus three backlog items with one-tap triage links.
-- Auto-archives what you keep ignoring, so the backlog cannot become a guilt pile.
 - Keeps storage and summarization on your own machine: summaries and answers come from a local model only.
 
 ## Features
@@ -63,7 +62,6 @@
 - **Resurfacing brief.** Every morning email pulls up to 3 items back out of the backlog (age x relevance, act-marked first, category-diverse, 5-day cooldown per item).
 - **One-tap triage from the email.** Each resurfaced item carries HMAC-signed Act / Later / Archive links (72-hour expiry); one tap sets the state, no app open needed.
 - **Triage deck.** A Review button on the knowledge base opens one card at a time: Act, Later, Archive, or Skip, with keyboard shortcuts (a / l / x / space) and a completion state. Max 10 cards per run.
-- **Auto-archive decay.** Untouched items age out (News after 7 days, everything else after 21), and an item resurfaced 3 times with no response archives regardless. Reversible, and the brief reports the count.
 - **One fatigue ledger.** The brief and the deck share a scorer and a cooldown store, so the same item is never pushed at you twice in a day.
 - **Runtime watchdog.** The server writes `heartbeat.json` every 5 minutes and records the last authenticated contact per client (`X-Client` header) in `clients.json`; `/health` reports version, start time, last save, last client contact and the failure count, and the server log carries a content-free line per request (method, path, status, client; never the URL or a token). The brief adds a "Host health" warning when saves or client contact stop for 48 hours, and on a day when no client reached the server a resurfacing stamps the cooldown but adds no strike toward auto-archive, because a prompt you could not have seen is not one you ignored. The Mac menu bar client polls `/health` every 15 minutes with no credentials, shows the result in its menu, and after two consecutive misses posts one banner and puts a `!` beside its icon until the server answers again.
 - **Weekly loop check.** Every state change is stamped with when and where it happened (email tap, deck, knowledge base page, decay) and logged to `triage_log.jsonl`. The Monday brief carries a one-line "Loop this week" rollup and appends a dated row to `loopcheck-history.txt`; `python3 daily_brief.py --weekly [--dry-run]` prints the same row on demand. Days when capture or triage was known to be down are subtracted, so a flat week is never mistaken for behaviour.

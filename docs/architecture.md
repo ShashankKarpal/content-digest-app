@@ -2,6 +2,22 @@
 
 ## System Architecture: Content Digest App (v0.5, measurement phase)
 
+### One-time migrations and decay off (2026-10, decision 14)
+
+- Auto-archive decay is gone: nothing archives an item on its own.
+- `migrations.py` runs at server start-up, before any thread starts. It backs
+  up `knowledge.json` and `failures.json` next to them
+  (`<name>.pre-migration-<YYYYmmdd-HHMMSS>.bak`, byte-checked), applies every
+  pending migration to one copy of the data, writes `knowledge.json` once
+  (atomic replace), then records each id with its counts and backup names in
+  `migrations.json` (gitignored). A second start does nothing; each migration
+  is also idempotent by content. A failure leaves the data untouched, writes
+  no marker, and never stops the server from starting.
+- `2026-10-decay-restore`: every item decay archived goes back to neutral.
+  New fields: `restored_at` (when) and `state_history` (a list; the restore
+  appends `{state, source, changed_at, auto_archived_at}`). The old fields
+  stay on the item. A hand archive is left alone and counted before and after.
+
 ### Measurement instruments and hardening (2026-09-05)
 
 Four commits, one per item, in the measurement phase. None of them changes what
