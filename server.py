@@ -149,11 +149,20 @@ def _js(obj):
     return json.dumps(obj).replace("</", "<\\/")
 
 
+def _atomic_write_text(path, text):
+    """Write through a temp file named for this file and this thread, then
+    rename it into place. Every writer used with_suffix(".tmp"), which is
+    knowledge.tmp for knowledge.json AND knowledge.html, so a page render
+    racing a data write could rename the page over the knowledge base
+    (review, 2026-10)."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text)
+    tmp.rename(path)
+
+
 def _write_html(text):
     """Atomic replace so a reader never sees a torn knowledge.html."""
-    tmp = HTML_FILE.with_suffix(".tmp")
-    tmp.write_text(text)
-    tmp.rename(HTML_FILE)
+    _atomic_write_text(HTML_FILE, text)
 
 
 def _junk_content_reason(text):
@@ -297,9 +306,7 @@ def _load_data():
 
 
 def _save_data(data):
-    tmp = DATA_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    tmp.rename(DATA_FILE)
+    _atomic_write_text(DATA_FILE, json.dumps(data, indent=2))
 
 
 def fetch_url_content(url):
@@ -467,9 +474,7 @@ def _load_embeddings():
 
 
 def _save_embeddings(embs):
-    tmp = EMB_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(embs))
-    tmp.rename(EMB_FILE)
+    _atomic_write_text(EMB_FILE, json.dumps(embs))
 
 
 def embed_text(text):
@@ -610,9 +615,7 @@ def _record_inbox(url, authed=False):
         inbox = {"items": []}
     inbox["items"].insert(0, {"url": url, "received_at": now, "authed": bool(authed)})
     inbox["items"] = inbox["items"][:500]
-    tmp = INBOX_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(inbox, indent=2))
-    tmp.rename(INBOX_FILE)
+    _atomic_write_text(INBOX_FILE, json.dumps(inbox, indent=2))
     print("[inbox] Captured: " + url[:60])
 
 
@@ -674,9 +677,7 @@ def _dismiss(url):
             d[k] = now
     if len(d) > DISMISSED_CAP:
         d = dict(sorted(d.items(), key=lambda kv: kv[1])[-DISMISSED_CAP:])
-    tmp = DISMISSED_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, indent=2))
-    tmp.rename(DISMISSED_FILE)
+    _atomic_write_text(DISMISSED_FILE, json.dumps(d, indent=2))
 
 
 def _self_heal_failures():
@@ -897,9 +898,7 @@ clients_lock = threading.Lock()
 
 
 def _write_json_atomic(path, payload):
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.rename(path)
+    _atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 def _load_clients():

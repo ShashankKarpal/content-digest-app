@@ -160,7 +160,7 @@ MIGRATIONS = (
 
 
 def _write_json_atomic(path, payload):
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(path.name + ".tmp")   # knowledge.json.tmp, never knowledge.tmp
     tmp.write_text(json.dumps(payload, indent=2))
     tmp.rename(path)
 

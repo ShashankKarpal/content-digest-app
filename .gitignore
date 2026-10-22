@@ -58,3 +58,6 @@ brief_sent.json
 .env.*
 !.env.example
 loopcheck-history.txt
+
+# atomic-write temp files (never committed, even if a crash leaves one)
+*.tmp
