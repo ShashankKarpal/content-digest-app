@@ -85,6 +85,41 @@ class BindServersTests(unittest.TestCase):
         self.assertEqual(attempts["n"], 3)
         self.assertEqual(sleeps, [5, 5])
 
+    def test_bind_never_does_a_reverse_dns_lookup(self):
+        # The default path (0.0.0.0) and the explicit-bind path must both
+        # start listening without socket.getfqdn, which took 35 s on the host.
+        import socket
+        calls = []
+        real = socket.getfqdn
+
+        def slow_lookup(name=""):
+            calls.append(name)
+            return real(name)
+
+        socket.getfqdn = slow_lookup
+        try:
+            default = server.CaptureServer(("0.0.0.0", 0), server.Handler)
+            explicit = server._bind_servers(["127.0.0.1"], 0, server.Handler, retry_seconds=0)
+        finally:
+            socket.getfqdn = real
+        try:
+            self.assertEqual(calls, [])
+            self.assertEqual(default.server_name, "0.0.0.0")
+            self.assertEqual(default.server_port, default.server_address[1])
+            self.assertEqual([s.server_name for s in explicit], ["127.0.0.1"])
+        finally:
+            default.server_close()
+            for s in explicit:
+                s.server_close()
+
+    def test_main_uses_the_lookup_free_server(self):
+        # Guards the two construction sites in __main__ and _bind_servers.
+        source = Path(server.__file__).read_text()
+        main = source[source.index('if __name__ == "__main__":'):]
+        self.assertNotIn("ThreadingHTTPServer((", main)
+        self.assertIn("CaptureServer((", main)
+        self.assertIs(server._bind_servers.__defaults__[2], server.CaptureServer)
+
     def test_one_dead_address_does_not_stop_the_others(self):
         servers = server._bind_servers(["203.0.113.1", "127.0.0.1"], 0, server.Handler, retry_seconds=0)
         try:

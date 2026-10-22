@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import socketserver
 import sys
 import threading
 import time
@@ -282,6 +283,22 @@ BIND_RETRY_DELAY = 5
 CONFIG_FILE = BASE_DIR / "config.json"
 
 
+class CaptureServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse DNS lookup at bind time.
+
+    http.server.HTTPServer.server_bind calls socket.getfqdn(host) between bind
+    and listen. On the serving host that lookup of "0.0.0.0" took 35 s on
+    2026-10-22, so every restart left capture refusing connections that long.
+    server_name feeds only CGI environment variables, which this server never
+    builds, so the bound host string is enough."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def _bind_addresses_from_config():
     """The optional bind_addresses list from config.json; [] when absent."""
     try:
@@ -303,7 +320,7 @@ def _bind_addresses_from_config():
 
 
 def _bind_servers(addresses, port, handler, retry_seconds=BIND_RETRY_SECONDS,
-                  delay=BIND_RETRY_DELAY, server_cls=ThreadingHTTPServer, sleep=time.sleep):
+                  delay=BIND_RETRY_DELAY, server_cls=CaptureServer, sleep=time.sleep):
     """Bind one server per address, retrying each for up to retry_seconds
     because an interface address can arrive after the LaunchAgent starts.
     Returns the servers that bound; an address that never binds is logged and
@@ -1718,7 +1735,7 @@ if __name__ == "__main__":
         if addresses:
             print(f"[server] WARNING: none of {addresses} could be bound; falling back to 0.0.0.0 "
                   "so capture stays up (the source allowlist still applies)", flush=True)
-        servers = [ThreadingHTTPServer(("0.0.0.0", port), Handler)]
+        servers = [CaptureServer(("0.0.0.0", port), Handler)]
     bound = ", ".join(f"{s.server_address[0]}:{s.server_address[1]}" for s in servers)
     print(f"[server] Content Digest server v{SERVER_VERSION} starting on {bound}", flush=True)
     for extra in servers[1:]:

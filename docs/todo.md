@@ -7,25 +7,33 @@ roadmap.md and worklog.md; this file holds only what is open.
 
 ## Now, owner
 
-- [ ] Live checks with the owner at the keyboard: the four extension tests
-      (wrong or removed token, changed server address, clean-profile reinstall
-      migration, the historical `/feed/` knowledge item) and two login-walled
-      saves. Run them from the Cowork live-checks prompt
-      (`11-COWORK-content-digest-live-checks.md` in the owner's task pack);
-      its steps about the old failure rows and the deleted loop-check task are
-      already done.
-- [ ] First check that the Chrome extension reaches the server at all: `/health`
-      has never listed an `extension` client since client tracking began
-      (2026-09-05).
+- [x] Live checks with the owner at the keyboard (2026-10-22): the four
+      extension tests (wrong token, changed server address, clean-profile
+      install, the historical `/feed/` item deleted) pass, and a signed-in
+      LinkedIn save passes. Patreon not tested (no membership). The extension
+      reaches the server; it was missing from `/health` clients only because
+      it had not been used since 2026-09-05.
 - [ ] Optional: remove the unread `send_hour_dubai`, `send_minute_dubai` and
       `server_base` keys from the host `config.json` (the brief time is the
       LaunchAgent's; triage links are retired).
 
-## After the live checks
+## Next, code (found in the 2026-10-22 live checks)
 
-- [ ] Add `bind_addresses` to the host `config.json` (loopback, tailnet address,
-      home LAN address), verify with `lsof -nP -iTCP:7778 -sTCP:LISTEN`, confirm
-      the phone still saves from both networks.
+- [ ] Extension popup: on a 401 say the token was rejected; today it shows the
+      same "server is unavailable or needs attention" text as a network failure.
+- [ ] Extension queue: an item refused for a bad token retries every 15 minutes
+      forever; stop retrying, or retry only after the settings change.
+- [ ] Extension errors page: "Cannot create item with duplicate id cd-save".
+      `createMenu` runs from both `onInstalled` and `onStartup` and the
+      `removeAll` callback races; harmless, the menu works.
+
+## Parked
+
+- [ ] `bind_addresses` in the host `config.json` (loopback, tailnet address,
+      home LAN address). Parked 2026-10-22 by owner delegation: every request
+      already needs the token and passes the source allowlist, a home LAN
+      address can change and silently drop Wi-Fi capture, and the check needs
+      the phone on both networks. Revisit only with a new reason.
 - [ ] Move hardcoded values (port, model names, retry intervals) into a config file.
 
 ## Screenshots to refresh in README (owner takes, then rephrase and commit)

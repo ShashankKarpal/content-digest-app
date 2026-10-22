@@ -312,3 +312,21 @@ brief; docs and version 0.6.
 - Tests: 82 Python tests and the 64-assertion extension suite, run with the
   host's Python minor version (3.14) in a scratch copy with a fake
   `secrets.json`.
+
+## 2026-10-22: live checks and the bind stall (kk2 Cowork)
+
+- Live checks with the owner: all four extension tests pass (wrong token
+  refused and queued, changed address queued and delivered after the fix,
+  clean-profile install starts empty, the `/feed/` item deleted and kept
+  deleted); a signed-in LinkedIn save passes; Patreon not tested. The
+  extension was absent from `/health` clients only because it had not been
+  used since 2026-09-05; its first Test connection put it there. Three small
+  extension follow-ups are in todo.md.
+- Bind stall fixed: `http.server` calls `socket.getfqdn(host)` between bind
+  and listen, and that reverse lookup of "0.0.0.0" took 35 s on the host,
+  so capture refused connections for about 35 s after every restart.
+  `CaptureServer` skips the lookup (server_name is used only for CGI
+  variables). Both construction sites use it; two tests, both failing on the
+  parent commit. A re-probe on the host at 19:00 took 0.0 s, so the stall
+  depends on resolver state; the fix removes the dependency either way.
+- `bind_addresses` parked by owner delegation (see todo.md).
