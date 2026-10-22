@@ -1547,9 +1547,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             body = {}
         authed = self._authed()
+        # Route on the path alone: "/state?x=1" or "/state/" must not slip
+        # past the retired list into the add path (review, 2026-10).
+        route = self.path.split("?", 1)[0].rstrip("/") or "/"
 
-        is_ingest = (self.path not in ("/delete", "/retry", "/failures/delete", "/ask")
-                     and self.path not in RETIRED_POST_PATHS)
+        is_ingest = (route not in ("/delete", "/retry", "/failures/delete", "/ask")
+                     and route not in RETIRED_POST_PATHS)
 
         # Durable inbox capture: record every incoming link before auth and fetch.
         if is_ingest:
@@ -1572,7 +1575,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._note_contact()
 
-        if self.path in RETIRED_POST_PATHS:
+        if route in RETIRED_POST_PATHS:
             self.send_response(410)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -1584,7 +1587,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        if self.path == "/delete":
+        if route == "/delete":
             url = body.get("url", "").strip()
             if url:
                 with data_lock:
@@ -1596,7 +1599,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True}).encode())
             return
 
-        if self.path == "/failures/delete":
+        if route == "/failures/delete":
             url = body.get("url", "").strip()
             if url:
                 _remove_failure(url)
@@ -1605,14 +1608,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True}).encode())
             return
 
-        if self.path == "/retry":
+        if route == "/retry":
             url = body.get("url", "").strip()
             self.wfile.write(json.dumps({"ok": True}).encode())
             if url.startswith(("http://", "https://")):
                 threading.Thread(target=process_url, args=(url,), daemon=True).start()
             return
 
-        if self.path == "/ask":
+        if route == "/ask":
             question = str(body.get("question", "")).strip()[:500]
             if not question:
                 self.wfile.write(json.dumps({"answer": "Ask a question about your saved items.", "sources": []}).encode())
@@ -1621,7 +1624,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(result).encode())
             return
 
-        if self.path == "/add_sync":
+        if route == "/add_sync":
             url = body.get("url", "").strip()
             if not url.startswith(("http://", "https://")):
                 self.wfile.write(json.dumps({"status": "invalid", "reason": "Not a valid URL"}).encode())

@@ -117,6 +117,13 @@ class RetiredTriageTests(LiveServerCase):
         self.assertEqual(item_state(), "")
         self.assertFalse((Path(self.tmp.name) / "resurface.json").exists(), "the fatigue ledger was written")
 
+    def test_a_query_string_or_trailing_slash_does_not_dodge_the_retired_list(self):
+        for path in ("/state?x=1", "/state/", "/deck/skip/", "/deck/skip?a=b"):
+            status, answer = self.post(path, {"url": URL, "state": "archive"})
+            self.assertEqual(self.processed, [], f"{path} started a save")
+            self.assertEqual(self.inbox_urls(), [], f"{path} wrote an inbox entry")
+            self.assertEqual((status, answer.get("status")), (410, "retired"), path)
+
     def test_an_old_emailed_triage_link_says_retired_and_changes_nothing(self):
         import hmac
         import urllib.parse
