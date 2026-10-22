@@ -19,6 +19,12 @@ older items as history; nothing writes them any more.
 
 - The SSRF guard moved from `server.py` to `extractors.blocked_url_reason`
   unchanged; `server.py` imports it as `_blocked_url_reason`.
+- Every page fetch (the extractors' `_get`, the direct fetch and the reader
+  proxy in `fetch_url_content`) goes through `extractors.guarded_urlopen`,
+  whose redirect handler runs the guard on each redirect target before
+  following it; plain `urlopen` followed up to 10 redirects unchecked. A
+  saved URL that is still a short link after `normalize_url` (the resolver
+  refused or failed) is a "fetch" failure, never fetched.
 - `extractors._resolve_short_link` follows a known shortener one hop at a
   time with redirects off (`_fetch_hop`): every hop, the destination
   included, passes the guard before it is requested; a bare `lnkd.in/<code>`

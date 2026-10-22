@@ -21,6 +21,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 from extractors import get_extractor, normalize_url, artifact_urls, container_page_reason
+from extractors import guarded_urlopen, is_short_link
 from extractors import blocked_url_reason as _blocked_url_reason   # the SSRF guard
 
 DATA_FILE = BASE_DIR / "knowledge.json"
@@ -323,7 +324,7 @@ def fetch_url_content(url):
     try:
         import trafilatura
         req = urllib.request.Request(url, headers=ua)
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with guarded_urlopen(req, timeout=15) as r:   # every redirect checked before it is followed
             final = r.geturl() or url
             blocked = _blocked_url_reason(final, resolve=False) if final != url else None
             if blocked:
@@ -340,7 +341,7 @@ def fetch_url_content(url):
     # so its output must pass the junk gate, not just a length check.
     try:
         req = urllib.request.Request('https://r.jina.ai/' + url, headers=ua)
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with guarded_urlopen(req, timeout=30) as r:
             md = r.read(MAX_FETCH_BYTES).decode('utf-8', errors='ignore')
         if md and len(md.strip()) > 300 and not _junk_content_reason(md.strip()[:3000]):
             print('[fetch] reader proxy succeeded')
@@ -803,6 +804,15 @@ def process_url(url, content=None):
             _record_failure(url, "quality", container)
             print(f"[reject] feed page, not a post: {url[:60]}")
             return {"status": "failed", "error_type": "quality", "reason": container}
+        if is_short_link(url):
+            # normalize_url follows a short link to its destination; one that
+            # is still short could not be resolved safely, and fetching it
+            # would hand its redirects to urllib. "fetch" lets the retry sweep
+            # try again later.
+            reason = "Short link could not be resolved to a safe address"
+            _record_failure(url, "fetch", reason)
+            print(f"[reject] {reason}: {url[:60]}")
+            return {"status": "failed", "error_type": "fetch", "reason": reason}
         data = _load_data()
         if url in [i["url"] for i in data["items"]]:
             print(f"[skip] Already saved: {url[:60]}")

@@ -113,12 +113,38 @@ def _bare_host(url):
     return host[4:] if host.startswith("www.") else host
 
 
+def is_short_link(url):
+    """True when url is on a known shortener host."""
+    return _bare_host(url) in _SHORTENER_HOSTS
+
+
+class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only after its target passes blocked_url_reason."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        reason = blocked_url_reason(newurl)
+        if reason:
+            raise urllib.error.URLError(f"redirect refused: {reason}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirect)
+
+
+def guarded_urlopen(req, timeout):
+    """urlopen that runs the SSRF guard on every redirect target before it is
+    followed. Plain urlopen followed up to 10 redirects unchecked, so a public
+    URL could bounce the server into its own network (review, 2026-10). The
+    first URL is the caller's to check."""
+    return _GUARDED_OPENER.open(req, timeout=timeout)
+
+
 def _get(url, timeout=20, headers=None):
     h = {"User-Agent": USER_AGENT}
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, headers=h)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with guarded_urlopen(req, timeout=timeout) as r:
         # 2 MB cap: the runtime host has 8 GB and an unbounded read is a
         # memory DoS from any page we are asked to fetch (audit 2026-09-02).
         return r.read(2_000_000).decode("utf-8", errors="ignore"), r.geturl()

@@ -38,7 +38,7 @@
 - **Self-healing capture.** Fetch failures retry 10 minutes after the server starts and every 6 hours after that, up to 3 attempts; inbox URLs that never became items are re-queued on the same sweep.
 - **URL normalization.** Tracking parameters (`utm_*`, `fbclid`, `share_id`, `si`) are stripped before dedupe and storage.
 - **Canonical URL dedupe.** The same article saved twice stays one item.
-- **Short links resolved safely.** lnkd.in and other common shorteners are followed one hop at a time to their destination (a LinkedIn "leaving LinkedIn" page included), and every hop passes the same private-address guard as the saved URL before it is requested, so a short link can never lead the server into its own network.
+- **Short links resolved safely.** lnkd.in and other common shorteners are followed one hop at a time to their destination (a LinkedIn "leaving LinkedIn" page included), and every hop passes the same private-address guard as the saved URL before it is requested. Every other page fetch checks each redirect the same way before following it, and a short link that cannot be resolved safely is refused, so neither can lead the server into its own network.
 - **Feed pages refused.** A feed or front page (the LinkedIn feed, the Reddit or Hacker News front page) is never saved as an item; it goes to the failures list with a note to save the post's own link.
 
 ### Extraction
