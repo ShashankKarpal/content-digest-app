@@ -500,6 +500,8 @@ def embed_item(item):
     vec = embed_text(_item_embed_source(item))
     if vec is None:
         return
+    if not _same_save(item["url"], item.get("saved_at")):
+        return   # deleted or saved again meanwhile; that save embeds its own item
     with emb_lock:
         embs = _load_embeddings()
         embs[item["url"]] = vec
@@ -754,20 +756,27 @@ def check_summary(summary, source, now=None):
             "names": len(names), "numbers": len(numbers), "missing": missing[:SUMMARY_CHECK_MISSING_MAX]}
 
 
-def _update_item(url, fields):
-    """Merge fields into one saved item under the data lock. False when the
-    item is gone (deleted while a background step was running)."""
+def _same_save(url, saved_at):
+    """True while the stored item for url is still the save stamped saved_at."""
+    return any(i["url"] == url and i.get("saved_at") == saved_at for i in _load_data()["items"])
+
+
+def _update_item(url, fields, saved_at=None):
+    """Merge fields into one saved item under the data lock. With saved_at,
+    only into that same save: a slow background step must not land on an item
+    that was deleted and saved again meanwhile (review, 2026-10). False when
+    nothing was written."""
     with data_lock:
         data = _load_data()
         for item in data["items"]:
-            if item["url"] == url:
+            if item["url"] == url and (saved_at is None or item.get("saved_at") == saved_at):
                 item.update(fields)
                 _save_data(data)
                 return True
     return False
 
 
-def enrich_item(url, content, summary=""):
+def enrich_item(url, content, summary="", saved_at=None):
     """Runs after the save, on its own thread, so it can never delay or fail
     one: summary_checked (the summary's names and numbers against the text it
     was made from) and artifact_urls (the links the post points to, short
@@ -782,7 +791,7 @@ def enrich_item(url, content, summary=""):
         fields["artifact_urls"] = artifact_urls(content or "", own_url=url)
     except Exception as e:
         print(f"[enrich] links skipped: {type(e).__name__}: {e}")
-    if fields and _update_item(url, fields):
+    if fields and _update_item(url, fields, saved_at=saved_at):
         missing = len(fields.get("summary_checked", {}).get("missing", []))
         print(f"[enrich] {len(fields.get('artifact_urls', []))} artifact link(s), "
               f"{missing} summary term(s) not in the source: {url[:60]}")
@@ -890,7 +899,8 @@ def process_url(url, content=None):
                 return {"status": "already_saved", "url": url}
             _write_html(build_html(_load_data()["items"]))
             threading.Thread(target=embed_item, args=(item,), daemon=True).start()
-            threading.Thread(target=enrich_item, args=(url, content, item["summary"]), daemon=True).start()
+            threading.Thread(target=enrich_item, args=(url, content, item["summary"], item["saved_at"]),
+                             daemon=True).start()
             print(f"[saved] {item['title']} ({item['category']})")
             return {"status": "saved", "title": item["title"], "category": item["category"]}
         except Exception as e:

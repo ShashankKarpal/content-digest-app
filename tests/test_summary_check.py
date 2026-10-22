@@ -182,6 +182,38 @@ class AfterTheSaveTests(unittest.TestCase):
         self.assertNotIn("summary_checked", stored[0], "the losing call checked the wrong summary onto the item")
         self.assertEqual(result["status"], "already_saved")
 
+    def test_a_slow_post_save_step_never_lands_on_a_newer_save(self):
+        """Save, delete, save again: the first save's step, held up on a slow
+        link lookup, finishes last and must not overwrite the newer save."""
+        import threading
+        url = "https://news.ycombinator.com/item?id=4"
+        entered, release = threading.Event(), threading.Event()
+        lookups = []
+
+        def slow_first_lookup(text, own_url=""):
+            lookups.append(own_url)
+            if len(lookups) == 1:
+                entered.set()
+                release.wait(5)
+            return []
+        summaries = iter(["Built by OpenAI for 1,200 teams.", "Built by Microsoft for 1,200 teams."])
+
+        def analysis(u, content):
+            return {"title": "t", "summary": next(summaries), "action_points": [], "category": "News",
+                    "tags": [], "relevance": 3}
+        with mock.patch.object(server, "artifact_urls", slow_first_lookup, create=True), \
+                mock.patch.object(server, "analyze_with_ai", analysis):
+            self.assertEqual(server.process_url(url)["status"], "saved")
+            self.assertTrue(entered.wait(5))
+            server.DATA_FILE.write_text(json.dumps({"items": []}))   # the owner deletes it
+            self.assertEqual(server.process_url(url)["status"], "saved")   # and saves it again
+            self.assertEqual(self.saved_item("summary_checked")["summary_checked"]["missing"], ["Microsoft"])
+            release.set()
+            time.sleep(0.5)   # the first save's step finishes now
+        item = json.loads(server.DATA_FILE.read_text())["items"][0]
+        self.assertEqual(item["summary_checked"]["missing"], ["Microsoft"],
+                         "the first save's slow step overwrote the newer save")
+
     def test_a_broken_check_never_fails_the_save(self):
         def broken(*args, **kwargs):
             raise RuntimeError("check crashed")
