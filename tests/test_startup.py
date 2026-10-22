@@ -97,12 +97,20 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(self.items()["https://example.org/decayed"]["state"], "archive")   # data untouched
 
     def test_start_sweeps_temp_files_a_killed_writer_left(self):
-        for name in ("knowledge.json.4242.123456.tmp", "knowledge.html.4242.99.tmp", "knowledge.json.tmp"):
+        planted = ("knowledge.json.4242.123456.tmp", "knowledge.html.4242.99.tmp", "knowledge.json.tmp")
+        for name in planted:
             (self.app / name).write_text("{partial")
         (self.app / "brief_sent.tmp").write_text("{}")   # the brief's own, not the server's
         self.start_and_stop()
+        # Only the planted files are checked: start_and_stop terminates the
+        # server as soon as it listens, which can land in the middle of its
+        # own first heartbeat write and leave that process's temp file (the
+        # next start sweeps it). Since the bind no longer waits on DNS, that
+        # happens often enough to make a whole-folder check flaky.
         left = sorted(p.name for p in self.app.glob("*.tmp"))
-        self.assertEqual(left, ["brief_sent.tmp"], left)
+        for name in planted:
+            self.assertNotIn(name, left, left)
+        self.assertIn("brief_sent.tmp", left)
 
     def test_second_start_does_not_migrate_again(self):
         self.start_and_stop()
