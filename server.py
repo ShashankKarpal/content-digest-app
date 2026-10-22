@@ -57,7 +57,7 @@ MAX_AUTO_RETRIES = 3
 # contact per client in clients.json (the X-Client header names the client;
 # unauthenticated requests and /health polls never count). The brief and the
 # menu bar client read these to tell a quiet week from a dead capture path.
-SERVER_VERSION = "0.5"
+SERVER_VERSION = "0.6"
 # One timezone for every timestamp the server writes (the host runs in +04).
 TZ = timezone(timedelta(hours=4))
 STARTED_AT = datetime.now(TZ).isoformat()

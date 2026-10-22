@@ -1,6 +1,19 @@
 # docs/architecture.md
 
-## System Architecture: Content Digest App (v0.5, measurement phase)
+## System Architecture: Content Digest App (v0.6, capture and knowledge base)
+
+### Item fields the monthly harvest reads (v0.6)
+
+| Field | Set by | Meaning |
+|---|---|---|
+| `category` | the model at save time | Tool (new), Work, Learning, News, Ideas, Entertainment |
+| `artifact_urls` | the post-save step, new saves only | links the post points to, short links resolved; `[]` none found; absent on older items |
+| `summary_checked` | the post-save step, new saves only | `{at, ok, names, numbers, missing}`: summary terms not found in the source |
+| `restored_at`, `state_history` | migration `2026-10-decay-restore` | when the decay archive was undone, and the old state |
+| `category_history` | migration `2026-10-tool-category` | the category before the move to Tool |
+
+`state`, `state_changed_at`, `state_source` and `auto_archived_at` stay on
+older items as history; nothing writes them any more.
 
 ### Capture: short links, artifact_urls, feed pages (2026-10, decision 14)
 

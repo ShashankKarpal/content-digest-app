@@ -1,5 +1,43 @@
 # docs/decision-log.md
 
+## 2026-09-30 | Product | Keep capture and the knowledge base; retire triage and resurfacing (decision 14)
+
+Context: The v0.5 measurement phase (2026-08-17 to 2026-09-17) asked whether
+the user acts on or archives saved items once the machinery exists. The
+weekly loop rows read act 0, manual archive 0 and deck skips 0, week after
+week, while saving never stopped. Auto-archive decay had hidden 197 of 233
+items by 2026-09-30, so the knowledge base showed a fraction of what was
+saved.
+
+Decision (the owner's words, from the 2026-09-30 decision record):
+
+> 14. Content Digest Path A or B: Neither as written: keep capture and the
+> knowledge base, retire one-at-a-time triage and resurfacing, run a monthly
+> harvest instead.
+>
+> - Morning email: keep a slim daily email with yesterday's new saves and the host-health warning. Drop the resurfaced items, the Act, Later and Archive links, and the weekly "Loop this week" line.
+> - Auto-archive decay: turn it off, and restore every item that decay archived. Nothing was archived by hand (manual archive 0 across 233 items), so no owner state changes.
+> - Capture fixes in the same build: resolve lnkd.in short links and store the post's own permalink instead of a /feed/ address; add a Tool category for things people built; add a summary self-check step.
+> - Failures list: clear the three 2026-09-03 extension-test rows.
+> - Monthly harvest: a kk1 Cowork scheduled task on the 1st of every month at 09:00 Dubai time prepares a harvest pack and sends Shanky a Slack DM with the exact CLI launch command. First run 2026-11-01, covering everything saved after 2026-09-29 19:25 +04.
+
+How it shipped (2026-10, v0.6), where it differs from the words above:
+- The summary self-check uses no model. A red-team review ruled out a second
+  model pass because the host has 8 GB and the summarizer fills it; names
+  and numbers are matched against the source text instead.
+- The three 2026-09-03 failure rows were already gone (removed on 2026-10-06
+  and 2026-10-12); the live list was checked before the build, so the
+  migration does not touch failures.json.
+- The extension already stored post permalinks and refused feed pages; the
+  server now also refuses feed pages from every capture path.
+- Riders in the same build: the Groq cloud fallback is removed (local models
+  only), retired POST paths answer "retired" instead of becoming saves, and
+  /health reports when the brief was last sent.
+
+Reason: the triage machinery was in place and unused, decay hid most of the
+knowledge base, and capture is the habit that works. A monthly harvest asks
+for attention twelve times a year instead of every morning.
+
 ## 2026-09-05 | Runtime | The client is the observer, and silence is not a strike
 
 Context: Two August outages (menu bar client down for a week, phone off the

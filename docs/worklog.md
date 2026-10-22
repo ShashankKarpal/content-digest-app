@@ -290,3 +290,25 @@ would stop if that address were not listed.
 - Owner step when ready (after the 09-17 read): add the key on the host, then
   `lsof -nP -iTCP:7778 -sTCP:LISTEN` must show exactly the listed addresses and
   the phone must still save from both the tailnet and home Wi-Fi.
+
+## 2026-10-22: v0.6, decision 14 build (kk2 Claude Code)
+
+Owner decision 14 (2026-09-30) plus the three red-team riders, one commit per
+item, each with a test and a control (the new test fails on the parent
+commit): Groq fallback removed; retired POST paths answer "retired"; decay
+off with a one-time restore migration; triage and resurfacing retired and the
+brief slimmed; Tool category with the 48 BUILT items moved; short links
+resolved hop by hop through the SSRF guard with `artifact_urls` and feed pages
+refused; summary self-check without a model; `/health` reports the last sent
+brief; docs and version 0.6.
+
+- Migration rehearsed on a copy of the live data (283 items): 241
+  decay-archived items restored, hand archives 0 before and 0 after, 48 moved
+  to Tool (Work 34, Ideas 7, News 7), no other field changed, a second run is
+  a no-op. Live counts are read from `migrations.json` on the host after the
+  deploy.
+- The three 2026-09-03 failure rows were already gone (checked live); the
+  migration leaves `failures.json` alone apart from its backup.
+- Tests: 82 Python tests and the 64-assertion extension suite, run with the
+  host's Python minor version (3.14) in a scratch copy with a fake
+  `secrets.json`.

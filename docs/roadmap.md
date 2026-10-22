@@ -89,9 +89,18 @@ Done when: user feels the app is working for them, not just collecting for them.
 - Small debts: client opens plain `/view`, one `TZ` constant, first retry sweep 10 minutes after start, README truth about settings.
 - Explicit bind (`bind_addresses` in `config.json`), shipped switched off; turn on after the read.
 
-## Parked until the 2026-09-17 read (do not start before it)
+## Delivered in v0.6 (2026-10, owner decision 14 of 2026-09-30)
 
-Order if the loop shows life: save-to-digest MCP (`/add` and `/ask` as MCP tools; the 2026-09-02 SSRF fixes are its precondition), off-tailnet triage (Funnel on `/triage` with a derived key, or reply-by-email), push channel (local banners already ship; ntfy only for content-free health alerts), host failover (only if outages become weekly). If the loop stays flat, the pivot clause in `redteam-audit-2026-08-17.md` section 6 applies instead.
+The read: act and manual archive stayed at 0 every week of the measurement phase while saving never stopped. Decision 14 kept capture and the knowledge base, retired one-at-a-time triage and resurfacing, and moved the act step to a monthly harvest that runs outside the app.
+- Retired: the brief's backlog items and signed links, the review deck, card-level states, the fatigue ledger, the weekly loop line, auto-archive decay. Old links answer "retired".
+- One-time migration (backup, marker, idempotent): every decay-archived item restored (241 on the live host at build time), 48 BUILT items moved to the new Tool category.
+- Slim morning email; `/health` reports when the brief was last sent.
+- Capture: short links resolved hop by hop through the SSRF guard, `artifact_urls` on new saves, feed pages refused, a summary self-check without a model.
+- Local models only: the Groq cloud fallback is removed.
+
+## Parked (not picked by decision 14)
+
+Save-to-digest MCP (`/add` and `/ask` as MCP tools; the 2026-09-02 SSRF fixes are its precondition), push channel (local banners already ship; ntfy only for content-free health alerts), host failover (only if outages become weekly). Off-tailnet triage is dropped with triage.
 
 ---
 

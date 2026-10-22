@@ -1,8 +1,45 @@
 # docs/current-phase.md
 
-## Current Version: v0.5 (shipped 2026-08-17; extension 0.6.1 and the measurement instruments 2026-09-05)
+## Current Version: v0.6 (owner decision 14, 2026-09-30; shipped 2026-10)
 
 ## What We Are Proving Now
+
+Saving is a habit, so the saves should earn their keep through a monthly
+harvest rather than a daily triage loop. The v0.5 measurement phase answered
+its question: act 0 and manual archive 0 every week while saving never
+stopped, and decay had hidden 241 of 283 items by 2026-10-22. The owner's
+decision 14: keep capture and the knowledge base, retire one-at-a-time triage
+and resurfacing, run a monthly harvest.
+
+The phase is capture plus knowledge base plus monthly harvest:
+- Capture: menu bar, share sheet and Shortcut, Chrome extension. Saving stays
+  under five seconds, and every save stays visible (decay is off and the items
+  it archived are back).
+- Knowledge base: search, categories (Tool is new), Ask, delete. Every new
+  save carries `artifact_urls` (what the post links to) and `summary_checked`
+  (names and numbers not found in the source) for the harvest.
+- Monthly harvest: on the 1st of each month a harvest, prepared outside this
+  app, reads the knowledge base and picks the few saves worth acting on; the
+  owner gets a Slack prompt to run it.
+- The morning email is slim: the last day's saves and the host-health
+  warning, nothing else.
+
+## Success Signal
+
+The monthly harvest finds at least one item the owner acts on per quarter.
+
+## Out of Scope in This Phase
+
+- Anything that pushes saved items back one at a time: resurfacing, triage
+  links, a review deck, auto-archive decay.
+- The parked list (save-to-digest MCP, push channel, host failover) and the
+  killed list in roadmap.md.
+
+---
+
+## Historical: v0.5, the measurement phase (shipped 2026-08-17; extension 0.6.1 and the measurement instruments 2026-09-05)
+
+### What v0.5 set out to prove
 
 The loop closes. v0.5 put the whole return-and-act path in place: the morning
 brief resurfaces three backlog items with one-tap Act / Later / Archive links,

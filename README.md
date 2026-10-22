@@ -12,7 +12,7 @@
 
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-99612F?style=flat-square">
-  <img alt="Status" src="https://img.shields.io/badge/status-v0.5-99612F?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/status-v0.6-99612F?style=flat-square">
   <img alt="Local first" src="https://img.shields.io/badge/local-first-99612F?style=flat-square">
   <img alt="Stack" src="https://img.shields.io/badge/built%20with-Python-1A1917?style=flat-square">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-1A1917?style=flat-square"></a>
@@ -64,7 +64,8 @@
 
 ### Daily brief
 
-- **Slim morning email.** Sent at the time of the LaunchAgent that runs `daily_brief.py`: every save from the last 24 hours, newest first, each with its title (linked to the item), its category and a two-line summary. Nothing else: no backlog items and no triage links.
+- **Slim morning email.** Sent at the time of the LaunchAgent that runs `daily_brief.py`: every save from the last 24 hours, newest first, each with its title (linked to the item), its category and a two-line summary. Nothing else.
+- **Monthly harvest.** Once a month, outside this app, a harvest reads the knowledge base (categories, `artifact_urls`, `summary_checked`) and picks the few saves worth acting on. The app's part is to keep every save visible and well labelled; nothing is archived or pushed back at you one item at a time.
 - **Host-health warning.** The brief adds one warning line when saves or authenticated client contact stop for 48 hours.
 
 ### Health
@@ -112,7 +113,7 @@ Copy `secrets.example.json` to `secrets.json` and fill it in. `secrets.json` and
 
 Set the server address in `local_settings.py` (also gitignored) as `SERVER = "http://..."`. That file is read by the menu bar client only; the server ignores it, so an `OLLAMA_URL` there does nothing (Ollama is always `localhost:11434` on the machine that runs `server.py`). Never commit a LAN, tailnet, or VPN address.
 
-The daily brief reads SMTP settings from `config.json` (gitignored): `smtp_user`, `smtp_password`, `recipient`. Any other key is ignored (an old `server_base` does nothing now that the brief carries no triage links); the send time is set by the LaunchAgent that runs `daily_brief.py`, not by the file. Act / Later / Archive links in briefs sent before the change open a short "this link has been retired" page and change nothing.
+The daily brief reads SMTP settings from `config.json` (gitignored): `smtp_user`, `smtp_password`, `recipient`. Any other key is ignored (an old `server_base` key does nothing now); the send time is set by the LaunchAgent that runs `daily_brief.py`, not by the file. Act / Later / Archive links in briefs sent before the change open a short "this link has been retired" page and change nothing.
 
 Real credentials live only on local machines. Nothing in this repository holds a working secret.
 
@@ -187,7 +188,8 @@ screenshots/      UI screenshots
 | v0.2 | Return loop: digest email and item states | Shipped |
 | v0.3 | Search, timezone-aware timestamps, reader-proxy fallback | Shipped |
 | v0.4 | Reddit, extractor registry, ask-your-KB, Chrome extension | Shipped |
-| v0.5 | Close the loop: auth everywhere, resurfacing brief, one-tap triage, triage deck, auto-archive decay | Shipped |
+| v0.5 | Close the loop: auth everywhere, a backlog email with one-tap state links, a review deck, auto-archive | Shipped; all but auth retired in v0.6 |
+| v0.6 | Capture and knowledge base: everything visible again, slim brief, Tool category, safe short links, links each post points to, summary self-check, local models only | Shipped |
 | v1 | Personalization: surface content based on what you act on | Data-gated: needs real act/archive signal first |
 
 ## Deployment
