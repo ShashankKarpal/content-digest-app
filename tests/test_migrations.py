@@ -135,6 +135,16 @@ class MigrationTests(unittest.TestCase):
         self.assertFalse((self.dir / "migrations.json").exists())
         self.assertTrue(any("unreadable" in line for line in self.lines))
 
+    def test_an_item_a_migration_cannot_read_makes_no_backups_however_often_it_starts(self):
+        self.data.write_text(json.dumps({"items": [None, FIXTURE[0]]}))
+        before = self.data.read_bytes()
+        for minute in range(3):
+            self.assertEqual(self.run_once(now=NOW + timedelta(minutes=minute)), {})
+        self.assertEqual(sorted(p.name for p in self.dir.glob("*.bak")), [], "each start left a backup pair")
+        self.assertEqual(self.data.read_bytes(), before)
+        self.assertFalse((self.dir / "migrations.json").exists())
+        self.assertTrue(any("FAILED" in line for line in self.lines))
+
     def test_fresh_install_is_recorded_as_done(self):
         self.data.unlink()
         self.assertEqual(self.run_once(), {})

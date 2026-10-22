@@ -4,12 +4,12 @@
 Each migration has an id and a function that changes the loaded items in
 place and returns its counts. run() applies the pending ones in order:
 
-0. reads and parses knowledge.json; if that fails nothing is applied and
-   no backup is made (the next start tries again),
-1. backs up knowledge.json and failures.json next to them as
+1. reads and parses knowledge.json and applies every pending migration to
+   that in-memory copy; if either fails, nothing is written and no backup
+   is made (the next start tries again),
+2. backs up knowledge.json and failures.json next to them as
    <name>.pre-migration-<YYYYmmdd-HHMMSS>.bak (the repo's *.bak rule keeps
    them out of git) and checks each copy is byte-identical before going on,
-2. applies every pending migration to one in-memory copy of knowledge.json,
 3. writes knowledge.json once (atomic replace), then the marker.
 
 The marker (migrations.json in the data folder) records each id with its time,
@@ -205,6 +205,17 @@ def run(base_dir, now=None, log=print):
         return {}
 
     try:
+        # Apply on the in-memory copy first: data a migration cannot handle
+        # (an item that is not an object) must leave no backups behind either
+        # (review, 2026-10). The file on disk is still the original.
+        results = {}
+        for mid, fn in pending:
+            results[mid] = fn(items, now)
+    except Exception as e:
+        log(f"[migrate] FAILED, nothing written and no backup made: {type(e).__name__}: {e}")
+        return {}
+
+    try:
         stamp = now.strftime("%Y%m%d-%H%M%S")
         backups = []
         for name in BACKED_UP:
@@ -216,13 +227,9 @@ def run(base_dir, now=None, log=print):
             if dst.read_bytes() != src.read_bytes():
                 raise OSError(f"backup of {name} does not match the original")
             backups.append(dst.name)
-
-        results = {}
-        for mid, fn in pending:
-            results[mid] = fn(items, now)
         _write_json_atomic(data_file, data)
     except Exception as e:
-        log(f"[migrate] FAILED, knowledge.json untouched: {type(e).__name__}: {e}")
+        log(f"[migrate] FAILED while saving, knowledge.json untouched: {type(e).__name__}: {e}")
         return {}
 
     for mid, counts in results.items():
