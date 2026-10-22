@@ -69,7 +69,7 @@
 
 ### Health
 
-- **Runtime watchdog.** The server writes `heartbeat.json` every 5 minutes and records the last authenticated contact per client (`X-Client` header) in `clients.json`; `/health` reports version, start time, last save, last client contact and the failure count, and the server log carries a content-free line per request (method, path, status, client; never the URL or a token). The Mac menu bar client polls `/health` every 15 minutes with no credentials, shows the result in its menu, and after two consecutive misses posts one banner and puts a `!` beside its icon until the server answers again.
+- **Runtime watchdog.** The server writes `heartbeat.json` every 5 minutes and records the last authenticated contact per client (`X-Client` header) in `clients.json`; `/health` reports version, start time, last save, last client contact, the failure count, and when the morning brief was last sent (`last_brief_sent_at`, stamped only after the mail server accepted it), and the server log carries a content-free line per request (method, path, status, client; never the URL or a token). The Mac menu bar client polls `/health` every 15 minutes with no credentials, shows the result in its menu, and after two consecutive misses posts one banner and puts a `!` beside its icon until the server answers again.
 
 ### Model routing
 

@@ -24,6 +24,7 @@ KNOWLEDGE_FILE = APP_DIR / "knowledge.json"
 LOG_FILE = APP_DIR / "daily_brief.log"
 LAST_RENDER_FILE = APP_DIR / "brief_last.html"
 CLIENTS_FILE = APP_DIR / "clients.json"              # written by server.py: last authenticated contact per client
+BRIEF_SENT_FILE = APP_DIR / "brief_sent.json"        # stamped after each successful send; server.py puts it in /health
 HOST_HEALTH_STALE_HOURS = 48                         # brief warns when saves or client contact stop for this long
 SUMMARY_CHARS = 200                                  # about two lines of a mail client
 
@@ -216,6 +217,18 @@ def send_email(config, subject, body):
         server.send_message(msg)
 
 
+def stamp_brief_sent(at, items):
+    """Record a successful send for /health, so a check outside the app can
+    tell a brief that stopped from a quiet day. Called only after SMTP
+    accepted the message; a failure to write it is logged, never raised."""
+    try:
+        tmp = BRIEF_SENT_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"at": at.isoformat(), "items": items}))
+        tmp.rename(BRIEF_SENT_FILE)
+    except Exception as e:
+        log(f"Brief-sent stamp not written: {type(e).__name__}: {e}")
+
+
 def main():
     dry_run = "--dry-run" in sys.argv
     if "--weekly" in sys.argv:
@@ -259,6 +272,7 @@ def main():
 
         send_email(config, subject, body)
         log(f"Sent brief with {len(recent)} items, to {config['recipient']}.")
+        stamp_brief_sent(datetime.now(DUBAI_OFFSET), len(recent))
         return 0
 
     except Exception as e:

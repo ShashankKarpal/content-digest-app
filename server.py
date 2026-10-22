@@ -63,6 +63,7 @@ TZ = timezone(timedelta(hours=4))
 STARTED_AT = datetime.now(TZ).isoformat()
 HEARTBEAT_FILE = BASE_DIR / "heartbeat.json"
 CLIENTS_FILE = BASE_DIR / "clients.json"
+BRIEF_SENT_FILE = BASE_DIR / "brief_sent.json"   # written by daily_brief.py after each successful send
 HEARTBEAT_SECONDS = 300
 KNOWN_CLIENTS = {"mac-client", "extension", "shortcut", "view", "brief"}
 
@@ -942,9 +943,14 @@ def health_snapshot():
         failures = len(_load_failures().get("items", []))
     except Exception:
         failures = None
+    try:
+        brief_sent = json.loads(BRIEF_SENT_FILE.read_text()).get("at") if BRIEF_SENT_FILE.exists() else None
+    except Exception:
+        brief_sent = None
     return {"ok": True, "processing": is_processing, "version": SERVER_VERSION,
             "started_at": STARTED_AT, "last_save_at": last_save,
-            "last_client_contact_at": last_contact, "clients": clients, "failures": failures}
+            "last_client_contact_at": last_contact, "clients": clients, "failures": failures,
+            "last_brief_sent_at": brief_sent}
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,7 @@ heartbeat.json
 clients.json
 dismissed.json
 migrations.json
+brief_sent.json
 
 # --- secrets hygiene completion (audit 2026-07-30) ---
 .env.*

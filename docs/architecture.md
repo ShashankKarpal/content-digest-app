@@ -48,6 +48,10 @@
 - `daily_brief.py`: one card per save from the last 24 hours (title linked to
   the item, category, a `two_lines()` summary of about 200 characters),
   newest first, plus the host-health line. `--weekly` exits without sending.
+- After SMTP accepts a brief, `daily_brief.py` writes `brief_sent.json`
+  (`{at, items}`, gitignored); `/health` reports it as
+  `last_brief_sent_at` (null before the first send or on a bad file), so a
+  check outside the app can tell a brief that stopped from a quiet day.
 
 ### One-time migrations and decay off (2026-10, decision 14)
 
