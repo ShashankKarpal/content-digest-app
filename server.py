@@ -250,10 +250,10 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_EMBED_MODEL = "nomic-embed-text"
 OLLAMA_MODEL = "qwen2.5:3b"
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Local models only (owner rule). The Groq cloud fallback was removed in
+# 2026-10: with Ollama down it sent the page text to Groq even with an empty
+# key. A secrets.json that still carries groq_api_key is simply not read.
 _SECRETS = json.loads(Path(BASE_DIR / "secrets.json").read_text())
-GROQ_API_KEY = _SECRETS.get("groq_api_key", "")
-GROQ_MODEL = "llama-3.1-8b-instant"  # llama3-8b-8192 decommissioned by Groq (verified 2026-07-19)
 
 AUTH_TOKEN = _SECRETS.get("auth_token", "")
 if AUTH_TOKEN in ("", "NEW_TOKEN", "YOUR_TOKEN_HERE"):
@@ -464,42 +464,18 @@ def _try_ollama(prompt):
     return result["message"]["content"]
 
 
-def _try_groq(prompt):
-    body = json.dumps({
-        "model": GROQ_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "max_tokens": 1000
-    }).encode()
-    req = urllib.request.Request(
-        GROQ_URL,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "User-Agent": "content-digest/0.4",  # Groq 403s the default Python-urllib UA
-        }
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read().decode())
-    return result["choices"][0]["message"]["content"]
-
-
 def analyze_with_ai(url, content):
+    """Summarize with the local model. There is no other endpoint: when Ollama
+    is down this raises, process_url records an "ai" failure, and the retry
+    sweep tries again later. The page text never leaves the host."""
     prompt = _build_prompt(url, content)
     try:
         text = _try_ollama(prompt)
-        print(f"[ai] Processed via Ollama: {url[:60]}")
-        return _parse_response(text)
     except Exception as e:
-        print(f"[ai] Ollama failed ({e}), trying Groq")
-    try:
-        text = _try_groq(prompt)
-        print(f"[ai] Processed via Groq: {url[:60]}")
-        return _parse_response(text)
-    except Exception as e:
-        print(f"[ai] Groq also failed ({e})")
-        raise Exception("All AI endpoints unavailable")
+        print(f"[ai] Ollama failed ({type(e).__name__}: {e})")
+        raise
+    print(f"[ai] Processed via Ollama: {url[:60]}")
+    return _parse_response(text)
 
 
 def validate_analysis(analysis, url):
@@ -642,11 +618,8 @@ Answer:"""
     try:
         answer = _try_ollama(prompt)
     except Exception:
-        try:
-            answer = _try_groq(prompt)
-        except Exception:
-            return {"answer": "AI endpoints are unavailable right now. Here are the closest matches instead.",
-                    "sources": [{"title": i["title"], "url": i["url"]} for i in top]}
+        return {"answer": "The local model is unavailable right now. Here are the closest matches instead.",
+                "sources": [{"title": i["title"], "url": i["url"]} for i in top]}
     answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
     return {"answer": answer[:3000],
             "sources": [{"title": i["title"], "url": i["url"]} for i in top]}

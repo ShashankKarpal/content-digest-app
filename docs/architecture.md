@@ -127,7 +127,7 @@ browser-content cap remain in place.
 - Item states: "state" field ("", act, revisit, archive), POST /state, filtered in UI, archived excluded from daily brief.
 - POST /ask: Ollama embeddings (nomic-embed-text at localhost:11434, embeddings.json cache, backfill at startup) with keyword fallback; answers via qwen/Groq with cited sources.
 - retry_loop(): every 6h retries fetch failures (max 3) and re-queues orphaned inbox URLs.
-- Groq fallback: model llama-3.1-8b-instant, custom User-Agent (default Python UA is 403'd by Groq edge).
+- Groq fallback: model llama-3.1-8b-instant, custom User-Agent (default Python UA is 403'd by Groq edge). REMOVED 2026-10: local models only; with Ollama down a save is an "ai" failure that the retry sweep picks up.
 
 **extension/** (new): Manifest V3 Chrome extension. Sends {url, title, content} of the rendered page to /add with the Bearer token. The unblockable capture path for Reddit, LinkedIn, and future walled sites. Replaces the retired reddit-tab-harvester fork.
 

@@ -26,7 +26,7 @@
 - Answers plain-language questions about everything you have saved.
 - Emails a morning brief of new saves plus three backlog items with one-tap triage links.
 - Auto-archives what you keep ignoring, so the backlog cannot become a guilt pile.
-- Keeps storage and summarization on your own machine, local-first with an optional cloud fallback.
+- Keeps storage and summarization on your own machine: summaries and answers come from a local model only.
 
 ## Features
 
@@ -76,15 +76,13 @@
 
 ### Model routing
 
-- **Local first.** Ollama on the local machine does the summarizing.
-- **Cloud fallback.** Groq is used only when the local model is unreachable, and only if you set a key.
+- **Local only.** Ollama on the server machine writes every summary and answers every Ask question. There is no cloud fallback: when the local model is down, a save becomes a visible failure and the retry sweep tries it again later.
 
 ## Stack
 
 - App: Python, rumps menu bar client
 - Extraction: trafilatura, youtube-transcript-api
-- Local inference: Ollama
-- Fallback inference: Groq (optional, off unless a key is set)
+- Local inference: Ollama (no cloud model)
 - Storage: plain JSON, plain HTML knowledge base
 - Capture surfaces: iOS Shortcuts, Chrome extension (Manifest V3)
 
@@ -109,7 +107,6 @@ Copy `secrets.example.json` to `secrets.json` and fill it in. `secrets.json` and
 ```json
 {
   "auth_token": "YOUR_TOKEN_HERE",
-  "groq_api_key": "YOUR_GROQ_KEY_HERE",
   "smtp_user": "YOUR_EMAIL_HERE",
   "smtp_password": "YOUR_APP_PASSWORD_HERE",
   "recipient": "YOUR_EMAIL_HERE"
@@ -203,7 +200,7 @@ To ship: commit and push to GitHub from the dev machine. Never edit code on the 
 
 ## Known limitations
 
-- A local model, or the Groq fallback, must be reachable for summarization.
+- The local model must be reachable for summarization; while it is down, saves wait in the failures list and are retried.
 - The Mac address changes across networks; update the iPhone shortcut if capture stops working.
 - YouTube videos without transcripts hit the fetch failure guard rather than guessing from the title.
 - LinkedIn saved-post harvesting is not built; the Chrome extension captures one post at a time by right-click or pasted permalink.
@@ -211,7 +208,7 @@ To ship: commit and push to GitHub from the dev machine. Never edit code on the 
 
 ## Privacy
 
-Local-first, not local-only. Saved items, summaries, embeddings, and the knowledge base live in plain files on your own machine, and a local model does the summarizing whenever it is reachable. Three things can leave the machine: fetching the pages you save (blocked sites route via the reader proxy), the optional Groq fallback when the local model is down (the extracted text is sent to Groq), and the morning brief email over SMTP. Leave the Groq key and SMTP settings empty in `secrets.json` to keep everything strictly local.
+Saved items, summaries, embeddings, and the knowledge base live in plain files on your own machine, and only a local model ever reads the text of what you save. Two things leave the machine: fetching the pages you save (blocked sites route via the reader proxy), and the morning brief email over SMTP. Leave the SMTP settings out of `config.json` and no brief is sent.
 
 ## License
 
