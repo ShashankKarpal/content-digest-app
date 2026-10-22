@@ -145,6 +145,13 @@ _JUNK_SUMMARY_MARKERS = (
 MAX_FETCH_BYTES = 2_000_000    # cap on any remote body we read
 MAX_BODY_BYTES = 1_000_000     # cap on a POST body (extension captures are <= 20k chars)
 
+# POST paths whose feature was retired. Any POST path without a handler falls
+# through to the add path at the end of do_POST (that keeps old capture
+# clients working), so a retired path must be listed here: otherwise a button
+# on an old cached page would turn its item URL into a new save (red team,
+# 2026-10). A retired path answers 410 {"status": "retired"} and records nothing.
+RETIRED_POST_PATHS = frozenset()
+
 
 def _js(obj):
     """JSON for inlining inside a <script> block: json.dumps does not escape
@@ -1773,7 +1780,8 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
         authed = self._authed()
 
-        is_ingest = self.path not in ("/delete", "/retry", "/failures/delete", "/state", "/ask", "/deck/skip")
+        is_ingest = (self.path not in ("/delete", "/retry", "/failures/delete", "/state", "/ask", "/deck/skip")
+                     and self.path not in RETIRED_POST_PATHS)
 
         # Durable inbox capture: record every incoming link before auth and fetch.
         if is_ingest:
@@ -1795,6 +1803,13 @@ class Handler(BaseHTTPRequestHandler):
             self._deny(403, "Cross-origin request refused")
             return
         self._note_contact()
+
+        if self.path in RETIRED_POST_PATHS:
+            self.send_response(410)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "status": "retired"}).encode())
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
