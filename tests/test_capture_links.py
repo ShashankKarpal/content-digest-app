@@ -110,6 +110,25 @@ class HopTests(unittest.TestCase):
         self.assertIsNone(got)
         self.assertEqual(len(calls), extractors.MAX_SHORT_LINK_HOPS)
 
+    def test_a_failed_lookup_is_tried_again_next_time(self):
+        calls = []
+
+        def flaky_hop(u, timeout=10):
+            calls.append(u)
+            if len(calls) == 1:
+                raise OSError("network blip")
+            return 301, "https://github.com/x/y", ""
+        with mock.patch.object(socket, "getaddrinfo", fake_dns()), \
+                mock.patch.object(extractors, "_fetch_hop", flaky_hop), \
+                mock.patch.dict(extractors._RESOLVE_CACHE, clear=True):
+            first = extractors._resolve_short_link("https://bit.ly/a")
+            second = extractors._resolve_short_link("https://bit.ly/a")
+            third = extractors._resolve_short_link("https://bit.ly/a")
+        self.assertIsNone(first)
+        self.assertEqual(second, "https://github.com/x/y", "a failed lookup was cached")
+        self.assertEqual(third, second)
+        self.assertEqual(len(calls), 2)   # the success is cached
+
     def test_the_guard_is_the_same_object_in_both_modules(self):
         if server is None:
             self.skipTest("server.py could not be imported here")

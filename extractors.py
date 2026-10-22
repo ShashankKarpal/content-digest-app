@@ -210,7 +210,9 @@ def _resolve_short_link(url):
     can never walk the server into its own network (red team, 2026-10). The
     walk stops at the first URL that is not on a shortener host; that URL is
     returned, never fetched. None when a hop is blocked, unreadable, or the
-    chain is longer than MAX_SHORT_LINK_HOPS. Cached."""
+    chain is longer than MAX_SHORT_LINK_HOPS. Only a result is cached: a
+    failure may be a network blip, and caching it would fail every retry
+    until the server restarts (review, 2026-10)."""
     if url in _RESOLVE_CACHE:
         return _RESOLVE_CACHE[url]
     current, final, hops = url, None, 0
@@ -233,7 +235,8 @@ def _resolve_short_link(url):
         if not nxt:
             break
         current = nxt
-    _RESOLVE_CACHE[url] = final
+    if final:
+        _RESOLVE_CACHE[url] = final
     return final
 
 
