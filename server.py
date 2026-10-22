@@ -814,15 +814,6 @@ def process_url(url, content=None):
             _record_failure(url, "quality", container)
             print(f"[reject] feed page, not a post: {url[:60]}")
             return {"status": "failed", "error_type": "quality", "reason": container}
-        if is_short_link(url):
-            # normalize_url follows a short link to its destination; one that
-            # is still short could not be resolved safely, and fetching it
-            # would hand its redirects to urllib. "fetch" lets the retry sweep
-            # try again later.
-            reason = "Short link could not be resolved to a safe address"
-            _record_failure(url, "fetch", reason)
-            print(f"[reject] {reason}: {url[:60]}")
-            return {"status": "failed", "error_type": "fetch", "reason": reason}
         data = _load_data()
         if url in [i["url"] for i in data["items"]]:
             print(f"[skip] Already saved: {url[:60]}")
@@ -836,6 +827,16 @@ def process_url(url, content=None):
                 print(f"[fetch] Browser content rejected ({junk}); refetching server-side")
                 content = None
         if not content:
+            if is_short_link(url):
+                # normalize_url follows a short link to its destination; one
+                # that is still short could not be resolved safely, and
+                # fetching it would hand its redirects to urllib. Text the
+                # browser sent is still used above, since nothing is fetched
+                # then. "fetch" lets the retry sweep try again later.
+                reason = "Short link could not be resolved to a safe address"
+                _record_failure(url, "fetch", reason)
+                print(f"[reject] {reason}: {url[:60]}")
+                return {"status": "failed", "error_type": "fetch", "reason": reason}
             try:
                 content = fetch_url_content(url)
                 if content is None:

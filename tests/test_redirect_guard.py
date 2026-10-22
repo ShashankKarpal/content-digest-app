@@ -142,6 +142,22 @@ class UnresolvedShortLinkTests(unittest.TestCase):
         failures = json.loads(server.FAILURES_FILE.read_text())["items"]
         self.assertEqual([(f["url"], f["error_type"]) for f in failures], [("https://bit.ly/abc123", "fetch")])
 
+    def test_text_the_browser_sent_is_still_saved_for_an_unresolved_short_link(self):
+        page = ("A maker shares the command line tool they built for sorting meeting notes into one weekly "
+                "page, with install steps, the beta numbers, the pricing plan, and what ships next month. ") * 3
+        analysis = {"title": "A notes tool", "summary": "A tool for meeting notes.", "action_points": [],
+                    "category": "Tool", "tags": [], "relevance": 3}
+        fetched = []
+        with mock.patch.object(socket, "getaddrinfo",
+                               lambda h, *a, **k: REAL_GETADDRINFO("93.184.216.34", *a, **k)), \
+                mock.patch.object(extractors, "_resolve_short_link", lambda url: None), \
+                mock.patch.object(server, "fetch_url_content", side_effect=lambda url: fetched.append(url)), \
+                mock.patch.object(server, "analyze_with_ai", lambda url, content: dict(analysis)), \
+                mock.patch.object(server, "embed_text", lambda text: None):
+            result = server.process_url("https://lnkd.in/p/abc123", content=page)
+        self.assertEqual(result["status"], "saved", result)
+        self.assertEqual(fetched, [])
+
 
 if __name__ == "__main__":
     unittest.main()
