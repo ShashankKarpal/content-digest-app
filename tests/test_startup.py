@@ -90,6 +90,12 @@ class StartupTests(unittest.TestCase):
         self.assertTrue(any(l.startswith("[migrate] 2026-10-decay-restore") for l in lines))
         self.assertEqual(len(list(self.app.glob("knowledge.json.pre-migration-*.bak"))), 1)
 
+    def test_a_broken_migrations_module_never_stops_the_server(self):
+        (self.app / "migrations.py").write_text("def run(:\n")   # a syntax error
+        lines = self.start_and_stop()   # fails unless the server reached "starting on"
+        self.assertTrue(any(l.startswith("[migrate] skipped: SyntaxError") for l in lines), lines)
+        self.assertEqual(self.items()["https://example.org/decayed"]["state"], "archive")   # data untouched
+
     def test_second_start_does_not_migrate_again(self):
         self.start_and_stop()
         first = (self.app / "knowledge.json").read_bytes()
