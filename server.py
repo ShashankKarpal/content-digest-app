@@ -690,6 +690,68 @@ def _self_heal_failures():
         print("[startup] Self-healed " + str(removed) + " stale failure(s)")
 
 
+# Summary self-check (decision 14, red-teamed 2026-10): no second model pass
+# (the host has 8 GB and the model already fills it). Every name and number
+# in the summary must appear in the text it was made from; what does not is
+# listed, never rewritten. Pure text work on bounded input, so it needs no
+# timeout; it runs after the save and a failure never touches the save.
+_NAME_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:['’.-][A-Za-z0-9]+)*")
+_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)*")
+_SENTENCE_START_RE = re.compile(r"(?:^|[.!?:;]['\")\]]*\s+|\n\s*(?:[-*•]\s*)?)$")
+_COMMON_CAPITALS = {"i", "a", "an", "the", "this", "that", "these", "those", "it", "its", "in", "on",
+                    "for", "and", "or", "but", "if", "as", "at", "by", "to", "of", "with", "from"}
+# Generic acronyms a summary uses as plain words; not names of anyone or
+# anything. Calibrated 2026-10-22 on 24 live items: "AI" alone made 4 of the
+# 6 flags while naming nothing the source left out.
+_GENERIC_ACRONYMS = {"ai", "api", "apis", "ui", "ux", "llm", "llms", "saas", "b2b", "b2c", "ceo", "cto",
+                     "cfo", "hr", "faq", "diy", "pdf", "url", "urls", "gpu", "cpu", "os", "ios", "kpi", "roi"}
+SUMMARY_CHECK_MISSING_MAX = 10
+
+
+def check_summary(summary, source, now=None):
+    """{at, ok, names, numbers, missing}: how many distinct names and numbers
+    the summary holds, and which of them the source text does not contain.
+    A name is a capitalized word or an acronym that does not open a sentence;
+    a number has at least two digits (single digits are too often spelled
+    out in the source). Matching ignores case, a possessive 's and a plural s."""
+    summary = str(summary or "")[:2000]
+    low = str(source or "")[:3000].lower()
+    digits = re.sub(r"(?<=\d),(?=\d)", "", low)
+
+    def present(token, hay):
+        # A plural or a possessive without its apostrophe on either side
+        # still counts ("Notion's" in the summary, "Notions" in the source).
+        for t in (token, token[:-1] if token.endswith("s") and len(token) > 3 else None):
+            if t and re.search(r"(?<![a-z0-9])" + re.escape(t) + r"s?(?![a-z0-9])", hay):
+                return True
+        return False
+
+    names, numbers, missing = [], [], []
+    for m in _NAME_TOKEN_RE.finditer(summary):
+        token = re.sub(r"['’]s$", "", m.group(0)).rstrip(".")
+        opens_sentence = bool(_SENTENCE_START_RE.search(summary[:m.start()]))
+        for i, word in enumerate(token.split("-")):   # "Electron-based" checks "Electron"
+            if not any(c.isupper() for c in word) or len(word) < 2:
+                continue
+            if word.lower() in _COMMON_CAPITALS or word.lower() in _GENERIC_ACRONYMS:
+                continue
+            if i == 0 and opens_sentence and word[0].isupper() and word[1:].islower():
+                continue   # a plain capitalized word opening a sentence or a bullet
+            if word.lower() not in names:
+                names.append(word.lower())
+                if not present(word.lower(), low):
+                    missing.append(word)
+    for m in _NUMBER_TOKEN_RE.finditer(summary):
+        num = m.group(0).replace(",", "").rstrip(".")
+        if sum(c.isdigit() for c in num) < 2 or num in numbers:
+            continue
+        numbers.append(num)
+        if not re.search(r"(?<![0-9.])" + re.escape(num) + r"(?![0-9])", digits):
+            missing.append(m.group(0).rstrip(".,"))
+    return {"at": (now or datetime.now(TZ)).isoformat(), "ok": not missing,
+            "names": len(names), "numbers": len(numbers), "missing": missing[:SUMMARY_CHECK_MISSING_MAX]}
+
+
 def _update_item(url, fields):
     """Merge fields into one saved item under the data lock. False when the
     item is gone (deleted while a background step was running)."""
@@ -703,17 +765,25 @@ def _update_item(url, fields):
     return False
 
 
-def enrich_item(url, content):
+def enrich_item(url, content, summary=""):
     """Runs after the save, on its own thread, so it can never delay or fail
-    one: artifact_urls, the links the post points to (short links resolved
-    hop by hop through the SSRF guard)."""
+    one: summary_checked (the summary's names and numbers against the text it
+    was made from) and artifact_urls (the links the post points to, short
+    links resolved hop by hop through the SSRF guard). Each step that fails
+    is skipped and logged; the other still lands."""
+    fields = {}
     try:
-        links = artifact_urls(content or "", own_url=url)
+        fields["summary_checked"] = check_summary(summary, content)
+    except Exception as e:
+        print(f"[enrich] summary check skipped: {type(e).__name__}: {e}")
+    try:
+        fields["artifact_urls"] = artifact_urls(content or "", own_url=url)
     except Exception as e:
         print(f"[enrich] links skipped: {type(e).__name__}: {e}")
-        return
-    if _update_item(url, {"artifact_urls": links}) and links:
-        print(f"[enrich] {len(links)} artifact link(s): {url[:60]}")
+    if fields and _update_item(url, fields):
+        missing = len(fields.get("summary_checked", {}).get("missing", []))
+        print(f"[enrich] {len(fields.get('artifact_urls', []))} artifact link(s), "
+              f"{missing} summary term(s) not in the source: {url[:60]}")
 
 
 def process_url(url, content=None):
@@ -802,7 +872,7 @@ def process_url(url, content=None):
             _remove_failure(url)
             _write_html(build_html(_load_data()["items"]))
             threading.Thread(target=embed_item, args=(item,), daemon=True).start()
-            threading.Thread(target=enrich_item, args=(url, content), daemon=True).start()
+            threading.Thread(target=enrich_item, args=(url, content, item["summary"]), daemon=True).start()
             print(f"[saved] {item['title']} ({item['category']})")
             return {"status": "saved", "title": item["title"], "category": item["category"]}
         except Exception as e:
@@ -976,6 +1046,7 @@ def build_html(items, failures=None):
   .meta {{ font-size: 12px; color: #666; margin-bottom: 8px; }}
   .cat-tag {{ background: #2a2a2a; color: #ff9f1c; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-right: 8px; }}
   .summary {{ font-size: 13px; color: #bbb; line-height: 1.6; margin-bottom: 10px; }}
+  .check-note {{ font-size: 11px; color: #b8860b; margin: -4px 0 10px 0; }}
   .tags {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
   .tag {{ background: #222; color: #888; padding: 2px 8px; border-radius: 8px; font-size: 11px; }}
   .dismiss {{ position: absolute; top: 12px; right: 12px; background: none; border: none; color: #555; font-size: 18px; cursor: pointer; line-height: 1; }}
@@ -1144,6 +1215,7 @@ function render() {{
       <h3><a href="${{safeHref(item.url)}}" target="_blank" rel="noopener">${{escapeHtml(item.title)}}</a></h3>
       <div class="meta"><span class="cat-tag">${{escapeHtml(item.category)}}</span>${{date}}</div>
       <p class="summary">${{escapeHtml(item.summary)}}</p>
+      ${{(item.summary_checked && (item.summary_checked.missing || []).length) ? `<div class="check-note">Not found in the source text: ${{escapeHtml(item.summary_checked.missing.join(", "))}}</div>` : ""}}
       ${{(item.action_points && item.action_points.length) ? `<div class="action-points"><strong style="color:#ff9f1c;font-size:13px;">Action Pointers</strong><ul style="margin-top:6px;padding-left:18px;color:#ccc;font-size:13px;line-height:1.8">${{item.action_points.map(a => `<li>${{escapeHtml(a)}}</li>`).join("")}}</ul></div>` : ""}}
       <div class="tags">${{tags}}</div>
     </div>`;

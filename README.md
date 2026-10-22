@@ -50,6 +50,7 @@
 - **Everything else via trafilatura.** Replaced the original regex extraction and made summaries materially cleaner.
 - **Reader-proxy fallback.** Blocked sites route through a reader proxy instead of failing.
 - **Fetch failure guard.** If extraction fails, the model is never called and you get a clear notification instead of a fabricated summary.
+- **Summary self-check.** Right after each save, every name and number in the summary is looked up in the text the summary was made from, with no second model call. Anything not found is listed in the item's `summary_checked` and shown as a short note on its card ("Not found in the source text: ..."); the summary itself is never rewritten.
 - **What the post links to.** Right after each save, in the background, the server lists the links in the extracted text (for LinkedIn and Reddit that includes the top comments) with short links resolved, in the item's `artifact_urls`.
 
 ### Knowledge base

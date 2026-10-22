@@ -20,6 +20,15 @@
   (at most 5 per item), tracking stripped, the item's own URL and blocked
   addresses left out. `[]` means none found; a missing field means the item
   predates this. A failure here never touches the save.
+- New field `summary_checked` (new saves only), written by the same
+  post-save step: `{at, ok, names, numbers, missing}` from `check_summary`.
+  No model call (the host has 8 GB and the summarizer fills it): every
+  capitalized word or acronym that does not open a sentence, and every
+  number with two or more digits, must appear in the extracted text (case,
+  a possessive and a plural ignored; generic acronyms such as AI and API
+  skipped). `missing` holds up to 10 terms and shows as a note on the card.
+  Calibrated 2026-10-22 on 24 live items: 0 flagged after tuning, about 1 ms
+  per item.
 - `extractors.container_page_reason` (mirror of `isContainerUrl` in
   `extension/shared.js`): a feed or front page from any capture path is a
   "quality" failure, never an item.
