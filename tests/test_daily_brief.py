@@ -7,6 +7,7 @@ Run: python3 -m unittest tests.test_daily_brief
 """
 
 import json
+import ssl
 import sys
 import tempfile
 import unittest
@@ -30,6 +31,26 @@ def _item(url, saved_days_ago=30, **fields):
           "saved_at": (NOW - timedelta(days=saved_days_ago)).isoformat()}
     it.update(fields)
     return it
+
+
+class SmtpTlsTests(unittest.TestCase):
+    """The Gmail login must run over TLS that checks the server certificate:
+    smtplib's default context verifies nothing, which would hand the app
+    password to anyone who can intercept the connection."""
+
+    def test_send_email_verifies_the_server_certificate(self):
+        config = {"smtp_user": "sender@example.invalid", "recipient": "reader@example.invalid",
+                  "smtp_password": "abcd efgh"}
+        with mock.patch.object(db.smtplib, "SMTP_SSL") as smtp:
+            db.send_email(config, "subject", "<p>body</p>")
+        smtp.assert_called_once()
+        kwargs = smtp.call_args.kwargs
+        context = kwargs.get("context")
+        self.assertIsInstance(context, ssl.SSLContext)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertGreater(context.cert_store_stats()["x509_ca"], 0, "no trusted root certificates loaded")
+        self.assertTrue(kwargs.get("timeout"), "a stalled connection must not hang the job")
 
 
 class SlimBodyTests(unittest.TestCase):

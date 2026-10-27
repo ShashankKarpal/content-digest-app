@@ -12,6 +12,7 @@ are retired.
 
 import json
 import smtplib
+import ssl
 import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -212,7 +213,9 @@ def send_email(config, subject, body):
 
     password = config["smtp_password"].replace(" ", "")
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    # smtplib's default context checks no certificate; this one does. The
+    # timeout turns a stalled connection into a logged error, not a hung job.
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=30) as server:
         server.login(config["smtp_user"], password)
         server.send_message(msg)
 
