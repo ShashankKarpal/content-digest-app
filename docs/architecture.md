@@ -130,7 +130,7 @@ menu bar menu.
   result in a greyed menu row, posts one banner after two consecutive misses
   and puts `!` beside the icon, posts one recovery banner. `CD_HEALTH_URL` and
   `CD_HEALTH_POLL_SECONDS` exist for Terminal tests only.
-- Extension 0.6.1 and the iPhone Shortcut send `X-Client`.
+- Extension 0.6.1 and later and the iPhone Shortcut send `X-Client`.
 
 **Small debts.** The client opens plain `/view` (the Locked page asks for the
 token once); one `TZ` constant in `server.py`; `retry_loop` sweeps 10 minutes
@@ -146,7 +146,7 @@ warning if none binds). Absent key: current behaviour.
 `heartbeat.json`, `clients.json`, `loopcheck-history.txt`, `brief_last.html`.
 
 **Tests:** `tests/test_daily_brief_rollup.py` (18), `tests/test_server_bind.py`
-(9), `tests/extension_acceptance.test.js` (64 assertions).
+(9), `tests/extension_acceptance.test.js` (77 assertions).
 
 ```
 brief tap / deck / page / api  --> set_item_state --> knowledge.json (state, state_changed_at, state_source)
@@ -156,7 +156,7 @@ server thread (5 min)          --> heartbeat.json
 Mac client (15 min, no auth)   --> GET /health   --> menu row, banner after two misses
 ```
 
-### Extension capture (0.6, shipped 2026-09-04; 0.6.1 on 2026-09-05 adds the X-Client header)
+### Extension capture (0.6, shipped 2026-09-04; 0.6.1 on 2026-09-05 adds the X-Client header; 0.6.2 on 2026-10-30 fixes the three live-check follow-ups)
 
 The server shape is unchanged. Every extension capture now uses authenticated
 `POST /add_sync`, so the client receives `saved`, `already_saved`, `failed`, or
@@ -187,7 +187,11 @@ dependency. Files and responsibilities:
   is removed when resolution finishes or times out (2 seconds).
 - `background.js` owns submission through authenticated `POST /add_sync`,
   badges, the capped 100-item retry queue with its 15-minute alarm, and a
-  persistent five-result history. Before POSTing it resolves a post-shaped
+  persistent five-result history. An item the server refused for its token
+  (401 or 403) is not retried by the alarm; saving the options page (a change
+  to `server`, `token` or `configuredAt`) retries every queued item once. The
+  context menu is rebuilt one call at a time, because `onInstalled` and
+  `onStartup` can both fire in one worker start. Before POSTing it resolves a post-shaped
   `lnkd.in/p/<code>` short link by following the redirect and submits the final
   direct `linkedin.com` post URL.
 

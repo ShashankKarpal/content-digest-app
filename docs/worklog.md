@@ -330,3 +330,19 @@ brief; docs and version 0.6.
   parent commit. A re-probe on the host at 19:00 took 0.0 s, so the stall
   depends on resolver state; the fix removes the dependency either way.
 - `bind_addresses` parked by owner delegation (see todo.md).
+
+## 2026-10-30: extension 0.6.2, the three live-check follow-ups (kk2 Claude Code)
+
+- Popup: a capture refused with 401 or 403 now says the token was rejected
+  and points to Settings; a network failure keeps the "unavailable" text.
+- Queue: a token-refused item is no longer retried every 15 minutes. The
+  alarm skips it and stops when only such items wait; saving the options
+  page retries every queued item once. Network failures keep the 15-minute
+  retry.
+- Context menu: "Cannot create item with duplicate id cd-save" came from
+  `onInstalled` and `onStartup` both rebuilding the menu in one worker start;
+  each rebuild now waits for the previous one.
+- Manifest 0.6.2, so an unpacked reload fires `onInstalled`. One commit per
+  fix, each with a test that fails on the parent commit. Tests: 106 Python
+  tests and 77 extension assertions, run from a `git archive` copy with a
+  fake `secrets.json`.
