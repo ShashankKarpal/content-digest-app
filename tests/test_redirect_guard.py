@@ -5,10 +5,9 @@ Plain urlopen followed up to 10 redirects unchecked, so a public URL, or a
 short link the resolver had refused, could bounce the server into its own
 network; normalize_url could fetch a lookalike reddit host before any check.
 A real local server plays both a public site and an inside address. Fake DNS
-answers the guard's question (where does this name point?) with a public
-address for site.invalid and loopback for every other name, while every
-connection goes to the local server; connection attempts are recorded,
-because the attempt itself is the leak.
+answers a public address for site.invalid and loopback for every other name;
+a dial to the public answer goes to the local server. Connection attempts are
+recorded, because the attempt itself is the leak.
 Run: python3 -m unittest tests.test_redirect_guard
 """
 
@@ -66,15 +65,23 @@ class InsideRedirectCase(unittest.TestCase):
         connections = self.connections
 
         def split_dns(host, port, *args, **kwargs):
-            if port is None:   # the guard asking where a name points
-                return REAL_GETADDRINFO("93.184.216.34" if host == "site.invalid" else "127.0.0.1",
-                                        port, *args, **kwargs)
-            connections.append(host)   # a connection attempt: always the local server
-            return REAL_GETADDRINFO("127.0.0.1", port, *args, **kwargs)
+            if port is not None:
+                connections.append(host)   # a connection attempt
+            return REAL_GETADDRINFO("93.184.216.34" if host == "site.invalid" else "127.0.0.1",
+                                    port, *args, **kwargs)
         self._dns = mock.patch.object(socket, "getaddrinfo", split_dns)
         self._dns.start()
+        # The connection checks the address it dials since the DNS rebinding
+        # fix, so the public answer for site.invalid is dialled as the local
+        # server here.
+        port = self.port
+        real_dial = extractors._dial
+        self._dial = mock.patch.object(extractors, "_dial", lambda family, socktype, proto, sockaddr, *rest:
+                                       real_dial(socket.AF_INET, socktype, proto, ("127.0.0.1", port), *rest))
+        self._dial.start()
 
     def tearDown(self):
+        self._dial.stop()
         self._dns.stop()
         self.httpd.shutdown()
         self.httpd.server_close()

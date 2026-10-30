@@ -15,6 +15,7 @@ Verified 2026-07-19:
 """
 
 import html as html_mod
+import http.client
 import ipaddress
 import json
 import re
@@ -118,6 +119,67 @@ def is_short_link(url):
     return _bare_host(url) in _SHORTENER_HOSTS
 
 
+# DNS rebinding (leak audit M4, 2026-10): blocked_url_reason asks DNS where a
+# name points, and the connection used to ask again. A name that answers a
+# public address the first time and an inside one the second slipped past.
+# Every fetch now resolves once at connect time, checks each address, and
+# connects to a checked address. TLS still verifies the certificate against
+# the host name. Proxies are off for these openers: a proxy would resolve the
+# name itself, out of the guard's sight.
+
+def _dial(family, socktype, proto, sockaddr, timeout, source_address):
+    """Connect one socket to one already-checked address."""
+    sock = socket.socket(family, socktype, proto)
+    try:
+        if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+            sock.settimeout(timeout)
+        if source_address:
+            sock.bind(source_address)
+        sock.connect(sockaddr)
+        return sock
+    except BaseException:
+        sock.close()
+        raise
+
+
+def _checked_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *args, **kwargs):
+    """socket.create_connection that refuses a name with any inside address."""
+    host, port = address[0], address[1]
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    for info in infos:
+        if _address_is_internal(info[4][0]):
+            raise OSError(f"refused: {host} resolves to an internal address at connect time")
+    error = None
+    for family, socktype, proto, _, sockaddr in infos:
+        try:
+            return _dial(family, socktype, proto, sockaddr, timeout, source_address)
+        except OSError as e:
+            error = e
+    raise error or OSError(f"no address for {host}")
+
+
+class _CheckedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _checked_connection
+
+
+class _CheckedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _checked_connection
+
+
+class _CheckedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_CheckedHTTPConnection, req)
+
+
+class _CheckedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_CheckedHTTPSConnection, req, context=self._context)
+
+
 class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
     """Follow a redirect only after its target passes blocked_url_reason."""
 
@@ -128,7 +190,8 @@ class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirect)
+_GUARDED_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _CheckedHTTPHandler, _CheckedHTTPSHandler, _GuardedRedirect)
 
 
 def guarded_urlopen(req, timeout):
@@ -182,7 +245,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+_NO_REDIRECT_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _CheckedHTTPHandler, _CheckedHTTPSHandler, _NoRedirect)
 _LNKD_EXTERNAL_LINK_RE = re.compile(r'<a\b[^>]*data-tracking-control-name="external_url_click"[^>]*>', re.I)
 
 
