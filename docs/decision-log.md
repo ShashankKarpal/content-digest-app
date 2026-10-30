@@ -1,5 +1,25 @@
 # docs/decision-log.md
 
+## 2026-10-30 | Extension | A capture refused for its settings waits instead of retrying every 15 minutes
+
+Context: The 2026-10-22 live checks found that a capture refused for a bad
+token was retried every 15 minutes forever, one refused request each time.
+The owner's task (2026-10-30) gave two options: stop retrying, or retry only
+after the settings change.
+
+Decision: Keep the capture queued (never drop it) but take it out of the
+timed retry. It is retried when the options page is saved or when a new
+capture is accepted (the fix may have been made on the server); the
+15-minute alarm and the browser-startup flush skip it. A capture queued with
+no server URL or token set is treated the same way. Network failures keep
+the 15-minute retry.
+
+Reason: A token problem is fixed in Settings or on the server, never by
+time; repeating the request only adds refused lines to the host log. The
+queue still holds every capture, so nothing is lost while the token is wrong.
+
+---
+
 ## 2026-09-30 | Product | Keep capture and the knowledge base; retire triage and resurfacing (decision 14)
 
 Context: The v0.5 measurement phase (2026-08-17 to 2026-09-17) asked whether

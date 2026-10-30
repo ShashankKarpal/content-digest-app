@@ -346,7 +346,11 @@ brief; docs and version 0.6.
   each rebuild now waits for the previous one.
 - Manifest 0.6.2, so an unpacked reload fires `onInstalled`. One commit per
   fix, each with a test that fails on the parent commit. `/code-review
-  medium` round 1 found 8 points; the fixes are three more commits. The
-  extension suite now fails when its run never finishes (before, a hung
-  promise exited 0). Tests: 106 Python tests and 86 extension assertions,
-  run from a `git archive` copy with a fake `secrets.json`.
+  medium` round 1 found 8 points (fixes: three commits); round 2 found 9
+  (fixes: four commits: a 30 s POST timeout, the alarm created only when
+  missing plus a flush at browser startup, a settings retry that stops at
+  the first refusal, and an accepted capture that releases the waiting
+  items). The extension suite now fails when its run never finishes
+  (before, a hung promise exited 0). Tests: 106 Python tests and 94
+  extension assertions, run from a `git archive` copy with a fake
+  `secrets.json`.
