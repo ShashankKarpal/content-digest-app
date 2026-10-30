@@ -1532,12 +1532,20 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(RETIRED_TRIAGE_HTML.encode())
             return
         if path == "/view":
+            # A token in the query string never signs in (leak audit H3,
+            # 2026-10): old /view?token= links get the sign-in form, and a
+            # signed-in browser is sent to plain /view, so the token-bearing
+            # URL is not refreshed in history.
+            import urllib.parse as _up
+            old_link = "token" in _up.parse_qs(query, keep_blank_values=True)
             if not self._cookie_ok():
-                # A token in the query string never signs in (leak audit H3,
-                # 2026-10): old /view?token= links get the sign-in form.
-                import urllib.parse as _up
-                old_link = "token" in _up.parse_qs(query, keep_blank_values=True)
                 self._locked(LOCKED_OLD_LINK_NOTICE if old_link else "")
+                return
+            if old_link:
+                self.send_response(303)
+                self.send_header("Location", "/view")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.end_headers()
                 return
             _touch_client("view")
             try:

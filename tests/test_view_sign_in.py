@@ -73,6 +73,12 @@ class ViewSignInTests(unittest.TestCase):
         self.assertIn("Please sign in", page)
         self.assertNotIn(TOKEN, page)
 
+    def test_a_signed_in_browser_is_sent_off_an_old_link(self):
+        cookie = f"{server.COOKIE_NAME}={server._session_cookie_value()}"
+        resp, _ = self.request("GET", "/view?token=" + urllib.parse.quote(TOKEN), headers={"Cookie": cookie})
+        self.assertEqual(resp.status, 303, "a signed-in browser kept the token-bearing URL")
+        self.assertEqual(resp.getheader("Location"), "/view")
+
     def test_the_locked_form_posts_the_token(self):
         resp, page = self.request("GET", "/view")
         self.assertEqual(resp.status, 401)
