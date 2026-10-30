@@ -93,6 +93,32 @@ function requestHeaders(index = -1) {
   return fetches.at(index)[2].headers || {};
 }
 
+// Runs the real popup.js against a minimal page and returns the status line it
+// shows after the background answers a send with the given response.
+async function popupText(response) {
+  const elements = {};
+  const element = (id) => elements[id] || (elements[id] = {
+    id, textContent: "", value: "", disabled: false, listeners: {},
+    addEventListener(type, fn) { this.listeners[type] = fn; },
+    replaceChildren() {},
+  });
+  const popupChrome = {
+    runtime: { sendMessage: async () => response, openOptionsPage() {} },
+    storage: { local: area({}), onChanged: { addListener() {} } },
+    tabs: { query: (query, callback) => callback([{ id: 1, url: "https://example.com/" }]), create() {} },
+  };
+  const page = {
+    chrome: popupChrome,
+    document: { getElementById: element, querySelectorAll: () => [], createElement: () => ({}) },
+  };
+  vm.createContext(page);
+  vm.runInContext(fs.readFileSync(path.join(root, "extension/popup.js"), "utf8"), page);
+  elements["capture-form"].listeners.submit({ preventDefault() {} });
+  // The listener does not return send()'s promise; let it settle first.
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  return elements.result.textContent;
+}
+
 async function run() {
   const CD = sandbox.CD;
   const popupHtml = fs.readFileSync(path.join(root, "extension/popup.html"), "utf8");
@@ -107,6 +133,12 @@ async function run() {
   assert.match(popupHtml, /Send to Content Digest/, "the popup makes pasted-URL submission the primary action");
   assert.match(popupHtml, /Open Content Digest/, "the popup links to the knowledge base");
   assert.doesNotMatch(popupJs, /urlInput\.value\s*=\s*tab/, "the popup opens with an empty field ready for a pasted URL");
+  const rejected = await popupText({ outcome: "queued", message: "AUTH: The server rejected the token.", url: "https://example.com/a" });
+  assert.match(rejected, /token was rejected/i, "the popup says the token was rejected on a 401 or 403");
+  assert.doesNotMatch(rejected, /unavailable/i, "a rejected token is not reported as an unavailable server");
+  const offline = await popupText({ outcome: "queued", message: "Failed to fetch", url: "https://example.com/a" });
+  assert.match(offline, /unavailable/i, "a network failure keeps the unavailable-server text");
+  assert.doesNotMatch(offline, /token/i, "a network failure does not blame the token");
 
   assert.equal(manifest.manifest_version, 3, "manifest stays on MV3");
   assert.equal(manifest.version, "0.6.1", "manifest version bumped so onInstalled update fires");

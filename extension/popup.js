@@ -23,6 +23,9 @@ async function send(message) {
     const response = await chrome.runtime.sendMessage(message);
     if (response.outcome === "saved") show("Done. The summary is now in Content Digest.");
     else if (response.outcome === "already_saved") show("This URL is already in Content Digest.");
+    else if (response.outcome === "queued" && String(response.message || "").startsWith("AUTH:")) {
+      show("The token was rejected by the server. Check the token in Settings. Your URL is safely queued.");
+    }
     else if (response.outcome === "queued") show("The server is unavailable or needs attention. Your URL is safely queued for retry.");
     else show(response.message);
   } catch (error) {

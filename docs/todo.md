@@ -19,7 +19,7 @@ roadmap.md and worklog.md; this file holds only what is open.
 
 ## Next, code (found in the 2026-10-22 live checks)
 
-- [ ] Extension popup: on a 401 say the token was rejected; today it shows the
+- [x] Extension popup: on a 401 say the token was rejected; today it shows the
       same "server is unavailable or needs attention" text as a network failure.
 - [ ] Extension queue: an item refused for a bad token retries every 15 minutes
       forever; stop retrying, or retry only after the settings change.
