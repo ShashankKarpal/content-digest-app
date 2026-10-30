@@ -3,7 +3,7 @@
   "name": "Content Digest Capture",
   "version": "0.6.2",
   "description": "Save pages, feed items, selections, and pasted permalinks to Content Digest with honest results.",
-  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "alarms"],
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "alarms", "cookies"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_title": "Save to Content Digest",

@@ -166,6 +166,36 @@ async function popupText(response) {
   return elements.result.textContent;
 }
 
+// Runs the real popup.js, clicks Open Content Digest, and returns the tabs it
+// opened and the cookies it set.
+async function popupOpenDigest(settings) {
+  const elements = {};
+  const element = (id) => elements[id] || (elements[id] = {
+    id, textContent: "", value: "", disabled: false, listeners: {},
+    addEventListener(type, fn) { this.listeners[type] = fn; },
+    replaceChildren() {},
+  });
+  const opened = [];
+  const cookies = [];
+  const popupChrome = {
+    runtime: { sendMessage: async () => ({}), openOptionsPage() {} },
+    storage: { local: area({ ...settings }), onChanged: { addListener() {} } },
+    tabs: { query: (query, callback) => callback([{ id: 1, url: "https://example.com/" }]), create: (options) => opened.push(options.url) },
+    cookies: { set: async (details) => { cookies.push(details); return details; } },
+  };
+  const page = {
+    chrome: popupChrome,
+    crypto: globalThis.crypto,
+    TextEncoder,
+    document: { getElementById: element, querySelectorAll: () => [], createElement: () => ({}) },
+  };
+  vm.createContext(page);
+  vm.runInContext(fs.readFileSync(path.join(root, "extension/popup.js"), "utf8"), page);
+  elements["open-digest"].listeners.click();
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  return { opened, cookies, status: elements.result.textContent };
+}
+
 async function run() {
   const CD = sandbox.CD;
   const popupHtml = fs.readFileSync(path.join(root, "extension/popup.html"), "utf8");
@@ -189,6 +219,21 @@ async function run() {
   const offline = await popupText({ outcome: "queued", message: "Failed to fetch", url: "https://example.com/a" });
   assert.match(offline, /unavailable/i, "a network failure keeps the unavailable-server text");
   assert.doesNotMatch(offline, /token/i, "a network failure does not blame the token");
+
+  const digest = await popupOpenDigest({ server: "http://server.test:7778/", token: " test-token " });
+  assert.deepEqual(digest.opened, ["http://server.test:7778/view"], "H3 Open Content Digest opens plain /view");
+  assert.equal(digest.opened.some((url) => /token/i.test(url)), false, "H3 the token is never put in a URL");
+  assert.equal(digest.cookies.length, 1, "H3 the popup signs in with the session cookie");
+  // The same value tests/test_view_sign_in.py pins for server.py's _session_cookie_value().
+  assert.equal(digest.cookies[0].value, "4c98a261ffb59d2fb844723e5a40c3f2be729f554dce4a3badbc08d507e3e5d5",
+    "H3 the cookie value matches the server's session cookie for the same token");
+  assert.equal(digest.cookies[0].name, "cd_session", "H3 the cookie has the server's cookie name");
+  assert.equal(digest.cookies[0].httpOnly, true, "H3 the cookie is HttpOnly, as the server sets it");
+  assert.equal(new URL(digest.cookies[0].url).host, "server.test:7778", "H3 the cookie is set for the server");
+  const unsetDigest = await popupOpenDigest({ server: "", token: "" });
+  assert.deepEqual(unsetDigest.opened, [], "H3 no tab without settings");
+  assert.equal(unsetDigest.cookies.length, 0, "H3 no cookie without settings");
+  assert.ok(manifest.permissions.includes("cookies"), "H3 the manifest asks for the cookies permission");
 
   assert.equal(manifest.manifest_version, 3, "manifest stays on MV3");
   assert.equal(manifest.version, "0.6.2", "manifest version bumped so onInstalled update fires");

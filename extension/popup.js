@@ -52,10 +52,30 @@ document.getElementById("capture-form").addEventListener("submit", (event) => {
 document.getElementById("save-page").addEventListener("click", () => send({
   type: "savePage", url: activeTab && activeTab.url, tabId: activeTab && activeTab.id,
 }));
+// The token never goes in a URL, where browser history (and synced history)
+// would keep it (leak audit H3). The popup signs this Chrome profile in with
+// the session cookie the server's Locked form would set, then opens plain
+// /view. The value must match server.py _session_cookie_value().
+async function sessionCookieValue(token) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(token), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode("content-digest-cookie-v1")));
+  return Array.from(mac, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 document.getElementById("open-digest").addEventListener("click", async () => {
   const { server = "", token = "" } = await chrome.storage.local.get(["server", "token"]);
   if (!server.trim() || !token.trim()) { show("Open Settings and enter the server URL and token first."); return; }
-  chrome.tabs.create({ url: server.trim().replace(/\/$/, "") + "/view?token=" + encodeURIComponent(token.trim()) });
+  const base = server.trim().replace(/\/$/, "");
+  try {
+    await chrome.cookies.set({
+      url: base + "/view", name: "cd_session", value: await sessionCookieValue(token.trim()), path: "/",
+      httpOnly: true, sameSite: "lax", expirationDate: Math.floor(Date.now() / 1000) + 31536000,
+    });
+  } catch (error) {
+    // Still open the page: its Locked form signs in by hand.
+  }
+  chrome.tabs.create({ url: base + "/view" });
 });
 document.getElementById("options").addEventListener("click", () => {
   chrome.runtime.openOptionsPage();

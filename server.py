@@ -1423,15 +1423,21 @@ LOCKED_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <p>This knowledge base requires a one-time unlock per device.</p>
 <p style="color:#888;font-size:14px;">Paste the auth token from secrets.json. A session cookie
 keeps this device signed in afterwards; the token itself is not stored.</p>
-<!-- GET form to /view?token=... so installed PWAs (own cookie jar, no address
-     bar) can unlock themselves without leaving the app. -->
-<form method="GET" action="/view" style="display:flex;gap:8px;margin-top:16px;">
+<!--notice-->
+<!-- POST form to /view so installed PWAs (own cookie jar, no address bar) can
+     unlock themselves without leaving the app, and the token never sits in a
+     URL (history, synced history, Referer). Leak audit H3, 2026-10. -->
+<form method="POST" action="/view" style="display:flex;gap:8px;margin-top:16px;">
   <input type="password" name="token" placeholder="Auth token" autocomplete="off"
          style="flex:1;background:#1e1e1e;border:1px solid #333;color:#e0e0e0;padding:10px 14px;border-radius:10px;font-size:14px;outline:none;">
   <button type="submit"
           style="background:#b17e51;border:none;color:#000;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Unlock</button>
 </form>
 </body></html>"""
+
+LOCKED_OLD_LINK_NOTICE = ('<p style="color:#e0a060;">This link has the token in it. Links like that no '
+                          'longer sign you in. Please sign in below.</p>')
+LOCKED_WRONG_TOKEN_NOTICE = '<p style="color:#e0a060;">That token was not accepted. Please try again.</p>'
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1478,6 +1484,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"ok": False, "error": msg}).encode())
 
+    def _locked(self, notice=""):
+        self.send_response(401)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(LOCKED_HTML.replace("<!--notice-->", notice).encode())
+
+    def _sign_in(self, raw):
+        """POST /view from the Locked form: a right token sets the session
+        cookie and sends the browser to plain /view (303, so a reload does not
+        post again). The token arrives in the body, never in a URL."""
+        import urllib.parse as _up
+        fields = _up.parse_qs(raw.decode("utf-8", errors="replace"))
+        supplied = fields.get("token", [""])[0].strip()
+        if not (AUTH_TOKEN and supplied
+                and hmac.compare_digest(supplied.encode(), AUTH_TOKEN.encode())):
+            self._locked(LOCKED_WRONG_TOKEN_NOTICE)
+            return
+        self.send_response(303)
+        self.send_header("Location", "/view")
+        self.send_header(
+            "Set-Cookie",
+            f"{COOKIE_NAME}={_session_cookie_value()}; Path=/; "
+            f"Max-Age=31536000; HttpOnly; SameSite=Lax")
+        self.end_headers()
+
     def do_GET(self):
         if not _trusted_source(self.client_address[0]):
             self._deny(403, "Forbidden source")
@@ -1494,21 +1527,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/view":
             if not self._cookie_ok():
+                # A token in the query string never signs in (leak audit H3,
+                # 2026-10): old /view?token= links get the sign-in form.
                 import urllib.parse as _up
-                supplied = _up.parse_qs(query).get("token", [""])[0]
-                if AUTH_TOKEN and hmac.compare_digest(supplied.encode(), AUTH_TOKEN.encode()):
-                    self.send_response(302)
-                    self.send_header("Location", "/view")
-                    self.send_header(
-                        "Set-Cookie",
-                        f"{COOKIE_NAME}={_session_cookie_value()}; Path=/; "
-                        f"Max-Age=31536000; HttpOnly; SameSite=Lax")
-                    self.end_headers()
-                    return
-                self.send_response(401)
-                self.send_header("Content-Type", "text/html")
-                self.end_headers()
-                self.wfile.write(LOCKED_HTML.encode())
+                old_link = "token" in _up.parse_qs(query, keep_blank_values=True)
+                self._locked(LOCKED_OLD_LINK_NOTICE if old_link else "")
                 return
             _touch_client("view")
             try:
@@ -1597,14 +1620,18 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_BODY_BYTES:
             self._deny(413, "Body too large")
             return
-        try:
-            body = json.loads(self.rfile.read(length)) if length else {}
-        except Exception:
-            body = {}
-        authed = self._authed()
+        raw = self.rfile.read(length) if length else b""
         # Route on the path alone: "/state?x=1" or "/state/" must not slip
         # past the retired list into the add path (review, 2026-10).
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if route == "/view":
+            self._sign_in(raw)   # the Locked form; never an ingest
+            return
+        try:
+            body = json.loads(raw) if raw else {}
+        except Exception:
+            body = {}
+        authed = self._authed()
 
         is_ingest = (route not in ("/delete", "/retry", "/failures/delete", "/ask")
                      and route not in RETIRED_POST_PATHS)
