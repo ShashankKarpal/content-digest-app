@@ -122,7 +122,8 @@ class ContentDigestClient(rumps.App):
         """GET /health with the token (for the last contact time). Returns (ok, detail)."""
         try:
             headers = {"User-Agent": "content-digest-client"}
-            if AUTH_TOKEN:
+            # Only to its own server: CD_HEALTH_URL can point anywhere in a test.
+            if AUTH_TOKEN and HEALTH_URL.startswith(SERVER.rstrip("/") + "/"):
                 headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
             req = urllib.request.Request(HEALTH_URL, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as resp:

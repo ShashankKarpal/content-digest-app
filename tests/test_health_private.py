@@ -104,6 +104,14 @@ class HealthTests(unittest.TestCase):
 
 class MacClientProbeTests(unittest.TestCase):
     def test_the_mac_client_sends_its_token_to_health(self):
+        self.assertEqual(self.probe_auth(), "Bearer " + TOKEN)
+
+    def test_the_mac_client_never_sends_its_token_elsewhere(self):
+        # CD_HEALTH_URL exists to point the watchdog at a test port or host.
+        self.assertIsNone(self.probe_auth("http://elsewhere.test/health"))
+
+    def probe_auth(self, health_url=None):
+        """Run the client's probe; return the Authorization header it sent."""
         # client.py needs rumps (a menu bar library) only for its UI; a stand-in
         # module is enough to import it and call the probe.
         fake_rumps = types.ModuleType("rumps")
@@ -124,12 +132,13 @@ class MacClientProbeTests(unittest.TestCase):
                     return b'{"ok": true}'
 
             with mock.patch.object(client, "AUTH_TOKEN", TOKEN), \
+                    mock.patch.object(client, "HEALTH_URL", health_url or client.SERVER + "/health"), \
                     mock.patch.object(client.urllib.request, "urlopen",
                                       lambda req, timeout: seen.append(req) or Reply()):
                 ok, _ = client.ContentDigestClient._probe(None)
             sys.modules.pop("client", None)
         self.assertTrue(ok)
-        self.assertEqual(seen[0].get_header("Authorization"), "Bearer " + TOKEN)
+        return seen[0].get_header("Authorization")
 
 
 if __name__ == "__main__":
