@@ -69,7 +69,12 @@ class HealthTests(unittest.TestCase):
         resp = conn.getresponse()
         body = json.loads(resp.read())
         conn.close()
+        self.cache_control = resp.getheader("Cache-Control")
         return resp.status, body
+
+    def test_the_full_snapshot_is_never_cached(self):
+        self.health({"Authorization": "Bearer " + TOKEN})
+        self.assertEqual(self.cache_control, "no-store")
 
     def test_an_unauthenticated_poll_gets_a_minimal_200(self):
         status, body = self.health()

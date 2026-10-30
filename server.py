@@ -1567,6 +1567,7 @@ class Handler(BaseHTTPRequestHandler):
             body = health_snapshot() if self._authed() else {"ok": True, "version": SERVER_VERSION}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")   # the full body is private
             self.end_headers()
             self.wfile.write(json.dumps(body).encode())
             return
