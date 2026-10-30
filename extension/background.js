@@ -56,9 +56,15 @@ function updateQueue(change) {
   return run;
 }
 
+// Re-creating an existing alarm restarts its 15-minute period, so a steady
+// trickle of failed captures would keep the retry from ever firing.
+async function ensureAlarm() {
+  if (!(await chrome.alarms.get(FLUSH_ALARM))) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+}
+
 async function queuePending(payload, reason) {
   await updateQueue((pending) => [...pending, { ...payload, queuedAt: Date.now(), queueReason: reason }].slice(-100));
-  if (!waitsForSettings(reason)) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+  if (!waitsForSettings(reason)) await ensureAlarm();
 }
 
 function setBadge(tabId, text, color) {
@@ -143,11 +149,8 @@ async function runFlush(retryRefused) {
       .map((item) => reasons.has(queueKey(item)) ? { ...item, queueReason: reasons.get(queueKey(item)) } : item);
     return remaining;
   });
-  // Only a settings retry can turn a waiting item back into a timed one; an
-  // alarm or queued capture already armed the alarm, and re-creating it would
-  // restart the 15-minute period.
-  if (!remaining.some((item) => !waitsForSettings(item.queueReason))) chrome.alarms.clear(FLUSH_ALARM);
-  else if (retryRefused) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+  if (remaining.some((item) => !waitsForSettings(item.queueReason))) await ensureAlarm();
+  else chrome.alarms.clear(FLUSH_ALARM);
 }
 
 // Flushes run one at a time, so two triggers never post the same item twice.
@@ -281,7 +284,12 @@ chrome.runtime.onInstalled.addListener((details) => {
   createMenu();
   if (details.reason === "install" || details.reason === "update") migrateFromSync();
 });
-chrome.runtime.onStartup.addListener(createMenu);
+// Chrome may drop alarms when the browser restarts; a flush at startup
+// delivers what it can and re-arms the alarm for what is left.
+chrome.runtime.onStartup.addListener(() => {
+  createMenu();
+  flushPending();
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "cd-save") captureContext(info, tab);

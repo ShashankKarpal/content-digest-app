@@ -23,6 +23,7 @@ const menus = new Set();
 const menuErrors = [];
 const menuCallbacks = [];
 let menuCreateThrows = false;
+const alarms = new Set();
 let fetchReply = async () => ({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
 
 function area(data) {
@@ -50,8 +51,9 @@ const chrome = {
     onChanged: { addListener: (fn) => { listeners.storage = fn; } },
   },
   alarms: {
-    create: (name, options) => calls.push(["alarm", name, options]),
-    clear: (name) => calls.push(["clear", name]),
+    create: (name, options) => { alarms.add(name); calls.push(["alarm", name, options]); },
+    clear: (name) => { alarms.delete(name); calls.push(["clear", name]); },
+    get: async (name) => (alarms.has(name) ? { name } : undefined),
     onAlarm: { addListener: (fn) => { listeners.alarm = fn; } },
   },
   action: {
@@ -99,6 +101,7 @@ function reset(settings = { server: "http://server.test:7778", token: "test-toke
   for (const key of Object.keys(local)) delete local[key];
   Object.assign(local, settings);
   calls.length = 0;
+  alarms.clear();
   contextReply = {};
   fetchReply = async () => ({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
 }
@@ -340,6 +343,8 @@ async function run() {
   await sandbox.submit({ url: exact }, 1);
   assert.equal(local.pending.length, 1, "T11 unreachable server queues the capture");
   assert.equal(calls.some((call) => call[0] === "alarm" && call[2].periodInMinutes === 15), true, "T11 keeps the 15-minute alarm");
+  await sandbox.submit({ url: exact + "&second" }, 1);
+  assert.equal(calls.filter((call) => call[0] === "alarm").length, 1, "T11 a second failed capture does not restart the 15-minute period");
   fetchReply = async () => ({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
   await sandbox.flushPending();
   assert.equal(local.pending.length, 0, "T11 reachable server flushes the queue");
@@ -363,6 +368,15 @@ async function run() {
   assert.equal(local.server, "http://local.test", "section 8 migration never clobbers local server");
   assert.equal(local.token, "local-token", "section 8 migration never clobbers local token");
   assert.equal(Object.keys(sync).length, 0, "section 8 migration purges sync unconditionally");
+
+  // Browser restart: alarms may be gone, so startup flushes and re-arms.
+  reset();
+  local.pending = [{ url: exact, queuedAt: 1, queueReason: "Failed to fetch" }];
+  fetchReply = async () => { throw new Error("offline"); };
+  listeners.startup();
+  await settleMenus();
+  assert.equal(calls.some((call) => call[0] === "fetch"), true, "T11 browser startup retries the queue");
+  assert.equal(alarms.has("cd-flush"), true, "T11 browser startup re-arms the alarm for what is left");
 
   reset();
   for (let i = 0; i < 101; i++) await sandbox.queuePending({ url: "https://example.com/" + i }, "offline");
