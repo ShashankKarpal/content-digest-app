@@ -138,6 +138,8 @@ class MacClientProbeTests(unittest.TestCase):
                 ok, _ = client.ContentDigestClient._probe(None)
             sys.modules.pop("client", None)
         self.assertTrue(ok)
+        # urllib copies req.headers onto a redirect, never unredirected ones.
+        self.assertNotIn("Authorization", seen[0].headers, "the token would follow a redirect")
         return seen[0].get_header("Authorization")
 
 

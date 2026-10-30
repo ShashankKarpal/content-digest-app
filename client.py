@@ -121,11 +121,11 @@ class ContentDigestClient(rumps.App):
     def _probe(self):
         """GET /health with the token (for the last contact time). Returns (ok, detail)."""
         try:
-            headers = {"User-Agent": "content-digest-client"}
-            # Only to its own server: CD_HEALTH_URL can point anywhere in a test.
+            req = urllib.request.Request(HEALTH_URL, headers={"User-Agent": "content-digest-client"})
+            # Only to its own server (CD_HEALTH_URL can point anywhere in a
+            # test), and never copied onto a redirect.
             if AUTH_TOKEN and HEALTH_URL.startswith(SERVER.rstrip("/") + "/"):
-                headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
-            req = urllib.request.Request(HEALTH_URL, headers=headers)
+                req.add_unredirected_header("Authorization", f"Bearer {AUTH_TOKEN}")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = json.loads(resp.read().decode() or "{}")
             return bool(body.get("ok")), body
