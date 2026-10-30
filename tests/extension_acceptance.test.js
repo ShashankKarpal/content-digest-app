@@ -22,6 +22,7 @@ let contextReply = {};
 const menus = new Set();
 const menuErrors = [];
 const menuCallbacks = [];
+let menuCreateThrows = false;
 let fetchReply = async () => ({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
 
 function area(data) {
@@ -61,6 +62,7 @@ const chrome = {
     removeAll: (callback) => { calls.push(["removeAll"]); menus.clear(); menuCallbacks.push(callback); },
     create: (options, callback) => {
       calls.push(["menu", options]);
+      if (menuCreateThrows) { menuCreateThrows = false; throw new Error("Invalid menu options"); }
       if (menus.has(options.id)) {
         chrome.runtime.lastError = { message: "Cannot create item with duplicate id " + options.id };
         menuErrors.push(chrome.runtime.lastError.message);
@@ -129,7 +131,9 @@ async function releaseUntil(done) {
 
 async function settleMenus() {
   for (let i = 0; i < 10; i++) {
-    while (menuCallbacks.length) menuCallbacks.shift()();
+    while (menuCallbacks.length) {
+      try { menuCallbacks.shift()(); } catch (error) { menuErrors.push("thrown: " + error.message); }
+    }
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
@@ -380,6 +384,16 @@ async function run() {
   await settleMenus();
   assert.deepEqual(menuErrors, [], "T15 onInstalled and onStartup together never create cd-save twice");
   assert.deepEqual(Array.from(menus), ["cd-save"], "T15 exactly one Save to Content Digest item remains");
+
+  reset();
+  menus.clear();
+  menuErrors.length = 0;
+  menuCreateThrows = true;
+  sandbox.createMenu();
+  await settleMenus();
+  sandbox.createMenu();
+  await settleMenus();
+  assert.deepEqual(Array.from(menus), ["cd-save"], "T15 a failed rebuild does not block the next one");
   console.log("extension acceptance: " + assertionCount + " assertions passed");
 }
 
