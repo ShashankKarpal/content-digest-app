@@ -1617,11 +1617,23 @@ class Handler(BaseHTTPRequestHandler):
             self._deny(403, "Forbidden source")
             return
 
+        # A negative length made rfile.read() wait for the client to hang up,
+        # before or without the token (leak audit M4, 2026-10). Check the
+        # header before reading anything. A missing length is refused too;
+        # without the token that is the plain 401 the daily capture-path
+        # check expects from its empty POST /add.
+        declared = self.headers.get("Content-Length")
+        if declared is None:
+            if self._authed():
+                self._deny(411, "Content-Length required")
+            else:
+                self._deny()
+            return
+        if not re.fullmatch(r"[0-9]+", declared.strip()):
+            self._deny(400, "Bad Content-Length")
+            return
         # Read the body FIRST so the URL is captured before auth or fetch can fail.
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-        except ValueError:
-            length = 0
+        length = int(declared)
         if length > MAX_BODY_BYTES:
             self._deny(413, "Body too large")
             return
