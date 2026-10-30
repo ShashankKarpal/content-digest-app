@@ -176,12 +176,13 @@ async function popupOpenDigest(settings, cookieFails = false) {
     replaceChildren() {},
   });
   const opened = [];
+  const background = [];
   const cookies = [];
   const warnings = [];
   const popupChrome = {
     runtime: { sendMessage: async () => ({}), openOptionsPage() {} },
     storage: { local: area({ ...settings }), onChanged: { addListener() {} } },
-    tabs: { query: (query, callback) => callback([{ id: 1, url: "https://example.com/" }]), create: (options) => opened.push(options.url) },
+    tabs: { query: (query, callback) => callback([{ id: 1, url: "https://example.com/" }]), create: (options) => { opened.push(options.url); background.push(options.active === false); } },
     cookies: {
       set: async (details) => {
         if (cookieFails) throw new Error("No host permissions for cookies at url");
@@ -201,7 +202,7 @@ async function popupOpenDigest(settings, cookieFails = false) {
   vm.runInContext(fs.readFileSync(path.join(root, "extension/popup.js"), "utf8"), page);
   elements["open-digest"].listeners.click();
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
-  return { opened, cookies, warnings, status: elements.result.textContent };
+  return { opened, background, cookies, warnings, status: elements.result.textContent };
 }
 
 async function run() {
@@ -242,6 +243,8 @@ async function run() {
   assert.deepEqual(refused.opened, ["http://server.test:7778/view"], "H3 a refused cookie still opens plain /view");
   assert.match(refused.status, /could not sign in/i, "H3 a refused cookie is said, not swallowed");
   assert.equal(refused.warnings.length, 1, "H3 a refused cookie leaves one console line");
+  assert.deepEqual(refused.background, [true], "H3 the tab opens in the background, so the popup stays open to show why");
+  assert.deepEqual(digest.background, [false], "H3 a signed-in open brings the tab to the front");
   const unsetDigest = await popupOpenDigest({ server: "", token: "" });
   assert.deepEqual(unsetDigest.opened, [], "H3 no tab without settings");
   assert.equal(unsetDigest.cookies.length, 0, "H3 no cookie without settings");

@@ -73,9 +73,12 @@ document.getElementById("open-digest").addEventListener("click", async () => {
       httpOnly: true, sameSite: "lax", expirationDate: Math.floor(Date.now() / 1000) + 31536000,
     });
   } catch (error) {
-    // Still open the page: its Locked form signs in by hand.
+    // Still open the page (its Locked form signs in by hand), but in the
+    // background: an active tab would close the popup before this is read.
     console.warn("Content Digest: could not set the sign-in cookie: " + (error && error.message));
-    show("Could not sign in automatically. The page will ask for the token.");
+    show("Could not sign in automatically. Content Digest is open in a new tab and will ask for the token.");
+    chrome.tabs.create({ url: base + "/view", active: false });
+    return;
   }
   chrome.tabs.create({ url: base + "/view" });
 });
