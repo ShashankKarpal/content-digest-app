@@ -79,6 +79,14 @@ class ViewSignInTests(unittest.TestCase):
         self.assertEqual(resp.status, 303, "a signed-in browser kept the token-bearing URL")
         self.assertEqual(resp.getheader("Location"), "/view")
 
+    def test_an_out_of_date_cookie_is_named(self):
+        # Review round 2: after a token change, a cookie the extension set from
+        # an old token used to give a bare Locked page.
+        resp, page = self.request("GET", "/view", headers={"Cookie": f"other=1; {server.COOKIE_NAME}=stale"})
+        self.assertEqual(resp.status, 401)
+        self.assertIn("out of date", page)
+        self.assertIn("extension", page)
+
     def test_the_locked_form_posts_the_token(self):
         resp, page = self.request("GET", "/view")
         self.assertEqual(resp.status, 401)

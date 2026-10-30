@@ -1438,6 +1438,11 @@ keeps this device signed in afterwards; the token itself is not stored.</p>
 LOCKED_OLD_LINK_NOTICE = ('<p style="color:#e0a060;">This link has the token in it. Links like that no '
                           'longer sign you in. Please sign in below.</p>')
 LOCKED_WRONG_TOKEN_NOTICE = '<p style="color:#e0a060;">That token was not accepted. Please try again.</p>'
+# A cd_session cookie the server no longer accepts: the token changed since
+# this browser signed in, or the extension holds an old token.
+LOCKED_STALE_COOKIE_NOTICE = ('<p style="color:#e0a060;">This browser\'s sign-in is out of date (the token '
+                              'has changed). Please sign in again. If you came from the Chrome extension, '
+                              'update the token in its Settings too.</p>')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1539,7 +1544,10 @@ class Handler(BaseHTTPRequestHandler):
             import urllib.parse as _up
             old_link = "token" in _up.parse_qs(query, keep_blank_values=True)
             if not self._cookie_ok():
-                self._locked(LOCKED_OLD_LINK_NOTICE if old_link else "")
+                stale = any(part.strip().partition("=")[0] == COOKIE_NAME
+                            for part in self.headers.get("Cookie", "").split(";"))
+                self._locked(LOCKED_OLD_LINK_NOTICE if old_link
+                             else LOCKED_STALE_COOKIE_NOTICE if stale else "")
                 return
             if old_link:
                 self.send_response(303)
