@@ -146,7 +146,7 @@ warning if none binds). Absent key: current behaviour.
 `heartbeat.json`, `clients.json`, `loopcheck-history.txt`, `brief_last.html`.
 
 **Tests:** `tests/test_daily_brief_rollup.py` (18), `tests/test_server_bind.py`
-(9), `tests/extension_acceptance.test.js` (94 assertions).
+(9), `tests/extension_acceptance.test.js` (102 assertions).
 
 ```
 brief tap / deck / page / api  --> set_item_state --> knowledge.json (state, state_changed_at, state_source)
@@ -191,12 +191,15 @@ dependency. Files and responsibilities:
   (401 or 403), or one queued with no server URL or token set, is not retried
   by the alarm; saving the options page (a change to `server`, `token` or
   `configuredAt`) or a newly accepted capture retries every queued item once,
-  stopping at the first item still refused. Flushes run one at a time, the
-  queue is written through one chain (a capture queued during a flush is
-  kept), each POST times out after 30 s, the alarm is created only when
-  missing (re-creating it restarts its period), and browser startup flushes
-  once to re-arm it. The context menu is rebuilt one call at a time, because
-  `onInstalled` and `onStartup` can both fire in one worker start. Before POSTing it resolves a post-shaped
+  stopping at the first item still refused (the items it skipped wait too).
+  A flush also stops at the first failure with no answer; an HTTP status
+  error on one item does not stop it. Flushes run one at a time, the queue is
+  written through one chain (a capture queued during a flush is kept), every
+  request (the POST and the lnkd.in lookup) times out after 30 s, the alarm is
+  created only when missing (re-creating it restarts its period), and browser
+  startup flushes once to re-arm it. The context menu is rebuilt one call at a
+  time, because `onInstalled` and `onStartup` can both fire in one worker
+  start. Before POSTing it resolves a post-shaped
   `lnkd.in/p/<code>` short link by following the redirect and submits the final
   direct `linkedin.com` post URL.
 

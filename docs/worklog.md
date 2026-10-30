@@ -350,7 +350,10 @@ brief; docs and version 0.6.
   (fixes: four commits: a 30 s POST timeout, the alarm created only when
   missing plus a flush at browser startup, a settings retry that stops at
   the first refusal, and an accepted capture that releases the waiting
-  items). The extension suite now fails when its run never finishes
-  (before, a hung promise exited 0). Tests: 106 Python tests and 94
-  extension assertions, run from a `git archive` copy with a fake
-  `secrets.json`.
+  items); round 3 found 9 (fixes: two commits: the lnkd.in lookup times
+  out too, and a flush stops at the first failure with no answer while the
+  items skipped after a token refusal wait for settings too). The rest are
+  recorded in the session handoff with reasons. The extension suite now
+  fails when its run never finishes (before, a hung promise exited 0).
+  Tests: 106 Python tests and 102 extension assertions, run from a
+  `git archive` copy with a fake `secrets.json`.
