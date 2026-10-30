@@ -1715,9 +1715,9 @@ if __name__ == "__main__":
     _sweep_stray_temp_files()
     try:
         # One-time data migrations (backup first, marker in the data folder).
-        # Imported here, not at the top: the host's deploy check compiles
-        # server.py but not migrations.py, so even a broken module must only
-        # log a line. A failure never stops capture from starting.
+        # Imported here, not at the top, so even a broken module only logs a
+        # line (the host's deploy check compiles migrations.py too since
+        # 2026-10-30). A failure never stops capture from starting.
         import migrations
         migrations.run(BASE_DIR, now=datetime.now(TZ), log=lambda m: print(m, flush=True))
     except Exception as e:
