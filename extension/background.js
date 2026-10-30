@@ -5,7 +5,7 @@ const HISTORY_KEY = "captureHistory";
 const FLUSH_ALARM = "cd-flush";
 // Flushes run one at a time, so a request that never answers must not hold
 // the queue; it times out and the item stays queued for the next retry.
-const POST_TIMEOUT_MS = 30000;
+const FETCH_TIMEOUT_MS = 30000;
 
 async function getSettings() {
   return chrome.storage.local.get(["server", "token"]);
@@ -23,7 +23,7 @@ async function postAdd(payload) {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + token.trim(), "X-Client": "extension" },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (resp.status === 401 || resp.status === 403) throw new Error("AUTH: The server rejected the token.");
   if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -84,7 +84,7 @@ async function resolveItemUrl(url) {
   try {
     const parsed = new URL(url);
     if (parsed.hostname.toLowerCase() !== "lnkd.in" || !parsed.pathname.startsWith("/p/")) return url;
-    const response = await fetch(url, { redirect: "follow" });
+    const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     return CD.linkedInPostUrl([response.url]) || url;
   } catch (error) {
     return url;

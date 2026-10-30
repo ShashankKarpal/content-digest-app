@@ -222,6 +222,8 @@ async function run() {
     : { ok: true, status: 200, json: async () => ({ status: "saved", url: post }) };
   await sandbox.submit({ url: "https://lnkd.in/p/evwG7VAv" }, 1);
   assert.equal(requestBody().url, post, "current LinkedIn copied links resolve to a proven direct permalink before POST");
+  const lookup = calls.find((call) => call[0] === "fetch" && call[1].startsWith("https://lnkd.in/p/"));
+  assert.ok(lookup[2].signal instanceof AbortSignal, "the lnkd.in lookup carries a timeout, so a hung redirect cannot hold the queue");
   assert.equal(requestHeaders()["X-Client"], "extension", "every server POST names the client so the runtime watchdog can count real contact");
   assert.match(requestHeaders().Authorization || "", /^Bearer /, "the token still travels in the Authorization header, never in the body or URL");
   const addCall = calls.filter((call) => call[0] === "fetch").at(-1);
