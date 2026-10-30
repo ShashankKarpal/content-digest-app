@@ -307,6 +307,14 @@ async function run() {
   await listeners.storage({ configuredAt: { newValue: 3 } }, "local");
   assert.equal(local.pending.length, 0, "T10 restored auth flushes the queue after the settings change");
 
+  // A settings save with a still-wrong token stops at the first refusal.
+  reset();
+  local.pending = [1, 2, 3].map((n) => ({ url: exact + "&n=" + n, queuedAt: n, queueReason: "AUTH: The server rejected the token." }));
+  fetchReply = async () => ({ ok: false, status: 401, json: async () => ({}) });
+  await listeners.storage({ token: { newValue: "still-wrong" } }, "local");
+  assert.equal(calls.filter((call) => call[0] === "fetch").length, 1, "T10 a still-wrong token is tried once, not once per queued item");
+  assert.equal(local.pending.length, 3, "T10 every refused item stays queued");
+
   // Clearing the token turns a refused item into a CONFIG one; it still waits
   // for Settings instead of re-arming the timed retry.
   reset();
