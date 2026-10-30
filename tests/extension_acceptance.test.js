@@ -307,6 +307,14 @@ async function run() {
   await listeners.storage({ configuredAt: { newValue: 3 } }, "local");
   assert.equal(local.pending.length, 0, "T10 restored auth flushes the queue after the settings change");
 
+  // A fix on the server side: the next accepted capture releases the queue.
+  reset();
+  local.pending = [{ url: exact + "&waiting", queuedAt: 1, queueReason: "AUTH: The server rejected the token." }];
+  result = await sandbox.submit({ url: exact }, 1);
+  assert.equal(result.outcome, "saved", "the new capture's answer does not wait for the queue");
+  await settle();
+  assert.equal(local.pending.length, 0, "T10 an accepted capture retries items waiting for settings");
+
   // A settings save with a still-wrong token stops at the first refusal.
   reset();
   local.pending = [1, 2, 3].map((n) => ({ url: exact + "&n=" + n, queuedAt: n, queueReason: "AUTH: The server rejected the token." }));

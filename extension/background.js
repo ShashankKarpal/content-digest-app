@@ -91,6 +91,17 @@ async function resolveItemUrl(url) {
   }
 }
 
+// A capture the server accepted proves the settings work now, even when the
+// fix was made on the server, so waiting items get one retry.
+async function retryQueueAfterSuccess() {
+  try {
+    const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
+    if (pending.length) await flushPending({ retryRefused: true });
+  } catch (error) {
+    console.warn("Content Digest queue retry failed.");
+  }
+}
+
 async function submit(payload, tabId, fromQueue = false) {
   let url = CD.unwrapUrl(payload.url || "");
   if (!CD.isHttpUrl(url)) return rejectCapture(url, tabId, "Paste a valid http or https URL.");
@@ -101,6 +112,7 @@ async function submit(payload, tabId, fromQueue = false) {
   try {
     const result = await postAdd(payload);
     const status = result.status || "failed";
+    if (!fromQueue && (status === "saved" || status === "already_saved")) retryQueueAfterSuccess();
     if (status === "saved") {
       await addHistory("saved", "Saved.", result.url || url);
       setBadge(tabId, "OK", "#22c55e");
