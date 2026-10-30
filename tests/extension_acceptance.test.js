@@ -236,7 +236,7 @@ async function run() {
   assert.ok(manifest.permissions.includes("cookies"), "H3 the manifest asks for the cookies permission");
 
   assert.equal(manifest.manifest_version, 3, "manifest stays on MV3");
-  assert.equal(manifest.version, "0.6.2", "manifest version bumped so onInstalled update fires");
+  assert.equal(manifest.version, "0.6.3", "manifest version bumped so onInstalled update fires");
   assert.equal(manifest.action.default_popup, "popup.html", "the toolbar icon opens the popup");
   const bridgeScript = manifest.content_scripts.find((script) => script.js.includes("bridge.js"));
   assert.deepEqual(bridgeScript.matches, ["https://*.linkedin.com/*"], "the bridge is registered only on LinkedIn");
