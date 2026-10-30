@@ -87,6 +87,7 @@ const sandbox = {
   fetch: (...args) => { calls.push(["fetch", ...args]); return fetchReply(...args); },
   importScripts: () => {},
   setTimeout: () => 0,
+  AbortSignal,
   URL,
 };
 sandbox.globalThis = sandbox;
@@ -220,6 +221,8 @@ async function run() {
   assert.equal(requestBody().url, post, "current LinkedIn copied links resolve to a proven direct permalink before POST");
   assert.equal(requestHeaders()["X-Client"], "extension", "every server POST names the client so the runtime watchdog can count real contact");
   assert.match(requestHeaders().Authorization || "", /^Bearer /, "the token still travels in the Authorization header, never in the body or URL");
+  const addCall = calls.filter((call) => call[0] === "fetch").at(-1);
+  assert.ok(addCall[2].signal instanceof AbortSignal, "the capture POST carries a timeout, so a silent server cannot hold the queue");
 
   reset();
   let result = await sandbox.capturePage({ id: 1, url: feed });
