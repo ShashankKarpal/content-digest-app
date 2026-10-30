@@ -371,3 +371,15 @@ brief; docs and version 0.6.
 - Manifest 0.6.3. One commit per fix, each with a test that fails on the
   parent commit. Tests run from a `git archive` copy with a fake
   `secrets.json`.
+- `/code-review medium`, three rounds (10, 8 and 9 findings). Fixed: a 30 s
+  socket timeout; a signed-in browser on an old `?token=` link goes to plain
+  `/view`; `/health` is never cached; the Mac client sends its token only to
+  its own server and never onto a redirect; the popup says when the cookie
+  cannot be set (background tab), checks the stored token before setting the
+  cookie, and the Locked page names an out-of-date sign-in. Recorded with
+  reasons in the bridge handoff: the slow-drip client, no sign-in rate limit,
+  the double DNS lookup, the copied cookie derivation, 411 for a signed POST
+  with no length, whitespace in the stored token.
+- `/security-review`: no finding in the new code; it found an older gap in
+  the same guard (a tailnet address in IPv6 form passed), fixed after the
+  review rounds.

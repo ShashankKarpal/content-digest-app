@@ -25,6 +25,8 @@ older items as history; nothing writes them any more.
   and dials a checked address (`_checked_connection`, `_dial`); TLS still
   verifies the certificate against the host name. Proxies are off for these
   openers, because a proxy would resolve the name out of the guard's sight.
+  `_address_is_internal` checks an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`)
+  as its IPv4 form, so a tailnet address in IPv6 form is internal too.
 - Every page fetch (the extractors' `_get`, the direct fetch and the reader
   proxy in `fetch_url_content`) goes through `extractors.guarded_urlopen`,
   whose redirect handler runs the guard on each redirect target before
@@ -143,11 +145,17 @@ menu bar menu.
 **Sign-in.** The token never goes in a URL (leak audit H3, 2026-10-30). The
 Locked page posts it to `POST /view` (routed before the capture inbox), which
 sets the session cookie and answers 303 to `/view`; `GET /view?token=` never
-signs in and shows the Locked page with a "please sign in" notice. The Mac
+signs in and shows the Locked page with a "please sign in" notice; a
+browser that is already signed in gets 303 to plain `/view`. A `cd_session`
+cookie that fails the check (the token changed) gets an "out of date"
+notice, when the server has a token at all. The Mac
 client opens plain `/view`; the extension sets the same cookie itself (see
 Extension capture). `do_POST` refuses a negative or malformed
 `Content-Length` (400) and a missing one (411 with the token, the plain 401
-without it) before reading any body.
+without it) before reading any body. `Handler.timeout` is 30 s per socket
+read or write, so a declared body that never comes frees its thread (a
+client that drips one byte under 30 s still holds one; recorded, not fixed).
+`/health` sends `Cache-Control: no-store`.
 
 **Small debts.** one `TZ` constant in `server.py`; `retry_loop` sweeps 10 minutes
 after start and then every 6 hours, logging one line per sweep.
@@ -187,11 +195,15 @@ dependency. Files and responsibilities:
   the honest outcome (saved, already saved, queued, refused, failed), plus
   Save current page, Open Content Digest, Settings, a collapsed recent-activity
   list, and the retry queue count. The field is never prefilled from the tab.
-  Open Content Digest sets the server's `cd_session` cookie with
+  Open Content Digest first checks the stored token (`GET /failures` with the
+  bearer token, 10 s timeout); on 401 or 403 it sets no cookie, names the
+  rejected token, and opens the Locked page in a background tab. Otherwise it
+  sets the server's `cd_session` cookie with
   `chrome.cookies` (HMAC-SHA256 of `content-digest-cookie-v1` keyed by the
   token, the value `server._session_cookie_value()` derives; both test suites
   pin it for one token) and opens plain `/view`. If the cookie cannot be set,
-  the Locked page still signs in by hand. This is what the `cookies`
+  the popup says so and opens `/view` in a background tab (an active tab
+  would close the popup first), where the Locked page signs in by hand. This is what the `cookies`
   permission is for.
 - `shared.js` owns URL unwrapping for known redirector wrappers (LinkedIn
   safety/go, Google, Facebook, Reddit, href.li, away.vk.com), container
