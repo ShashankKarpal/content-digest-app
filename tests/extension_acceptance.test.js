@@ -175,6 +175,9 @@ async function run() {
   const rejected = await popupText({ outcome: "queued", message: "AUTH: The server rejected the token.", url: "https://example.com/a" });
   assert.match(rejected, /token was rejected/i, "the popup says the token was rejected on a 401 or 403");
   assert.doesNotMatch(rejected, /unavailable/i, "a rejected token is not reported as an unavailable server");
+  const unset = await popupText({ outcome: "queued", message: "CONFIG: Open Options and set the server URL and token.", url: "https://example.com/a" });
+  assert.match(unset, /Settings/, "the popup sends missing settings to Settings");
+  assert.doesNotMatch(unset, /unavailable/i, "missing settings are not reported as an unavailable server");
   const offline = await popupText({ outcome: "queued", message: "Failed to fetch", url: "https://example.com/a" });
   assert.match(offline, /unavailable/i, "a network failure keeps the unavailable-server text");
   assert.doesNotMatch(offline, /token/i, "a network failure does not blame the token");

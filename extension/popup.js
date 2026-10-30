@@ -26,6 +26,9 @@ async function send(message) {
     else if (response.outcome === "queued" && String(response.message || "").startsWith("AUTH:")) {
       show("The token was rejected by the server. Check the token in Settings. Your URL is safely queued.");
     }
+    else if (response.outcome === "queued" && String(response.message || "").startsWith("CONFIG:")) {
+      show("Set the server URL and token in Settings. Your URL is safely queued.");
+    }
     else if (response.outcome === "queued") show("The server is unavailable or needs attention. Your URL is safely queued for retry.");
     else show(response.message);
   } catch (error) {
