@@ -32,11 +32,17 @@ async function addHistory(outcome, message, url) {
   await chrome.storage.local.set({ [HISTORY_KEY]: history.slice(0, 5) });
 }
 
+// An item the server refused for its token waits for a settings change; the
+// 15-minute alarm retries only items that failed for other reasons.
+function tokenRefused(item) {
+  return String(item.queueReason || "").startsWith("AUTH:");
+}
+
 async function queuePending(payload, reason) {
   const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
   pending.push({ ...payload, queuedAt: Date.now(), queueReason: reason });
   await chrome.storage.local.set({ [PENDING_KEY]: pending.slice(-100) });
-  chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+  if (!reason.startsWith("AUTH:")) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
 }
 
 function setBadge(tabId, text, color) {
@@ -100,24 +106,32 @@ async function submit(payload, tabId, fromQueue = false) {
   }
 }
 
-async function flushPending() {
+async function flushPending({ retryRefused = false } = {}) {
   const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
-  if (!pending.length) {
-    chrome.alarms.clear(FLUSH_ALARM);
-    return;
-  }
   const remaining = [];
   for (const item of pending) {
+    if (tokenRefused(item) && !retryRefused) {
+      remaining.push(item);
+      continue;
+    }
     const payload = cleanPayload(item);
     const result = await submit(payload, 0, true);
-    if (result.outcome === "queued") remaining.push(item);
+    if (result.outcome === "queued") remaining.push({ ...item, queueReason: result.message });
   }
-  await chrome.storage.local.set({ [PENDING_KEY]: remaining });
-  if (!remaining.length) chrome.alarms.clear(FLUSH_ALARM);
+  if (pending.length) await chrome.storage.local.set({ [PENDING_KEY]: remaining });
+  if (remaining.some((item) => !tokenRefused(item))) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+  else chrome.alarms.clear(FLUSH_ALARM);
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === FLUSH_ALARM) flushPending();
+});
+
+// Saving the options page is the signal that the token may be fixed.
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && (changes.server || changes.token || changes.configuredAt)) {
+    return flushPending({ retryRefused: true });
+  }
 });
 
 function grabPageContent() {

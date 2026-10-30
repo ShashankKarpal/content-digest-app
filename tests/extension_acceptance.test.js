@@ -38,7 +38,11 @@ function area(data) {
 }
 
 const chrome = {
-  storage: { local: area(local), sync: area(sync) },
+  storage: {
+    local: area(local),
+    sync: area(sync),
+    onChanged: { addListener: (fn) => { listeners.storage = fn; } },
+  },
   alarms: {
     create: (name, options) => calls.push(["alarm", name, options]),
     clear: (name) => calls.push(["clear", name]),
@@ -240,9 +244,20 @@ async function run() {
   assert.equal(result.outcome, "queued", "T10 bad auth queues the capture");
   assert.equal(local.pending.length, 1);
   assert.match(local.captureHistory[0].message, /token.*queued/i);
-  fetchReply = async () => ({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
+  assert.equal(calls.some((call) => call[0] === "alarm"), false, "T10 a token refusal sets no 15-minute retry");
+  calls.length = 0;
   await sandbox.flushPending();
-  assert.equal(local.pending.length, 0, "T10 restored auth flushes the queue");
+  assert.equal(calls.some((call) => call[0] === "fetch"), false, "T10 the timed retry skips a token-refused item");
+  assert.equal(local.pending.length, 1, "T10 the token-refused item stays queued");
+  assert.equal(calls.some((call) => call[0] === "clear" && call[1] === "cd-flush"), true, "T10 the alarm stops when only token-refused items wait");
+  await listeners.storage({ configuredAt: { newValue: 2 } }, "sync");
+  assert.equal(calls.some((call) => call[0] === "fetch"), false, "T10 a change outside local settings retries nothing");
+  await listeners.storage({ token: { newValue: "new-token" } }, "local");
+  assert.equal(calls.filter((call) => call[0] === "fetch").length, 1, "T10 a settings change retries the token-refused item once");
+  assert.equal(local.pending.length, 1, "T10 a still-wrong token keeps the item queued");
+  fetchReply = async () => ({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
+  await listeners.storage({ configuredAt: { newValue: 3 } }, "local");
+  assert.equal(local.pending.length, 0, "T10 restored auth flushes the queue after the settings change");
 
   reset();
   fetchReply = async () => { throw new Error("offline"); };
