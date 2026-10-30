@@ -16,12 +16,13 @@ except ImportError:
     SERVER = "http://127.0.0.1:7778"
 
 # D1 watchdog (2026-09-05): this client is the observer for the remote runtime.
-# It polls /health every HEALTH_POLL_SECONDS without credentials (so a poll
-# never counts as user contact on the server), posts ONE banner after
-# MISSES_BEFORE_ALERT consecutive misses, marks the menu bar item, and posts
-# one recovery banner when the server answers again. The two environment
-# variables exist so the behaviour can be exercised from a Terminal against a
-# closed port without touching the LaunchAgent.
+# It polls /health every HEALTH_POLL_SECONDS with the bearer token, because
+# without it /health says only that the server answers (leak audit M4,
+# 2026-10); the server never counts a health poll as user contact. It posts
+# ONE banner after MISSES_BEFORE_ALERT consecutive misses, marks the menu bar
+# item, and posts one recovery banner when the server answers again. The two
+# environment variables exist so the behaviour can be exercised from a
+# Terminal against a closed port without touching the LaunchAgent.
 HEALTH_URL = os.environ.get("CD_HEALTH_URL") or f"{SERVER}/health"
 HEALTH_POLL_SECONDS = int(os.environ.get("CD_HEALTH_POLL_SECONDS") or 900)
 MISSES_BEFORE_ALERT = 2
@@ -118,9 +119,12 @@ class ContentDigestClient(rumps.App):
     # --- watchdog -----------------------------------------------------------
 
     def _probe(self):
-        """GET /health with no credentials. Returns (ok, detail)."""
+        """GET /health with the token (for the last contact time). Returns (ok, detail)."""
         try:
-            req = urllib.request.Request(HEALTH_URL, headers={"User-Agent": "content-digest-client"})
+            headers = {"User-Agent": "content-digest-client"}
+            if AUTH_TOKEN:
+                headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
+            req = urllib.request.Request(HEALTH_URL, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = json.loads(resp.read().decode() or "{}")
             return bool(body.get("ok")), body

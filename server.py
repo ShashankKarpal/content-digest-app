@@ -1546,10 +1546,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(html.encode())
             return
         if path == "/health":
+            # Without the token, only "the server answers" (leak audit M4,
+            # 2026-10): device contact times, the last save and the start
+            # time map the owner's day. With it, the full snapshot; a health
+            # poll still never counts as client contact.
+            body = health_snapshot() if self._authed() else {"ok": True, "version": SERVER_VERSION}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps(health_snapshot()).encode())
+            self.wfile.write(json.dumps(body).encode())
             return
         if path == "/failures":
             if not self._authed():

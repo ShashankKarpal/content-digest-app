@@ -87,6 +87,10 @@ class HealthTests(unittest.TestCase):
                 self._saved[name] = value
                 setattr(server, name, d / value.name)
         self.stamp = d / "brief_sent.json"
+        # The brief time is in the full snapshot, which needs the token since
+        # the leak audit (M4, 2026-10).
+        self._saved["AUTH_TOKEN"] = server.AUTH_TOKEN
+        server.AUTH_TOKEN = "test-token-" + "x" * 32
 
     def tearDown(self):
         for name, value in self._saved.items():
@@ -98,7 +102,7 @@ class HealthTests(unittest.TestCase):
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         try:
             conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
-            conn.request("GET", "/health")
+            conn.request("GET", "/health", headers={"Authorization": "Bearer " + server.AUTH_TOKEN})
             body = json.loads(conn.getresponse().read())
             conn.close()
             return body
