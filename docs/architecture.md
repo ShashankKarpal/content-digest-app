@@ -19,6 +19,12 @@ older items as history; nothing writes them any more.
 
 - The SSRF guard moved from `server.py` to `extractors.blocked_url_reason`
   unchanged; `server.py` imports it as `_blocked_url_reason`.
+- DNS rebinding (2026-10-30, leak audit M4): both openers (`_GUARDED_OPENER`,
+  `_NO_REDIRECT_OPENER`) use connection classes whose connect resolves the
+  name once, refuses it if any address is internal (`_address_is_internal`),
+  and dials a checked address (`_checked_connection`, `_dial`); TLS still
+  verifies the certificate against the host name. Proxies are off for these
+  openers, because a proxy would resolve the name out of the guard's sight.
 - Every page fetch (the extractors' `_get`, the direct fetch and the reader
   proxy in `fetch_url_content`) goes through `extractors.guarded_urlopen`,
   whose redirect handler runs the guard on each redirect target before
@@ -119,21 +125,31 @@ menu bar menu.
   `clients.json` records the last authenticated contact per `X-Client`
   (`mac-client`, `extension`, `shortcut`, `view`, `triage-link`, `brief`, else
   `api`). A valid signed triage tap counts as contact; `/health` polls and
-  unauthenticated requests never do. `/health` returns `ok, processing,
-  version, started_at, last_save_at, last_client_contact_at, clients,
-  failures`. `log_request` prints `[req] METHOD path status client=` with the
+  unauthenticated requests never do. Without the token `/health` returns
+  only `ok, version` (leak audit M4, 2026-10-30); with the bearer token or
+  the session cookie it returns `ok, processing, version, started_at,
+  last_save_at, last_client_contact_at, clients, failures,
+  last_brief_sent_at`. `log_request` prints `[req] METHOD path status client=` with the
   query string dropped; `/health` and `/assets/` are skipped.
 - Brief: `host_health()` warns when the last save or the last client contact is
   48 h or older; `save_resurface(..., strike=False)` on a day with no client
   contact in 24 h, so an outage cannot push items into auto-archive.
-- Mac client: polls `/health` every 15 minutes without credentials, shows the
+- Mac client: polls `/health` every 15 minutes with its token, shows the
   result in a greyed menu row, posts one banner after two consecutive misses
   and puts `!` beside the icon, posts one recovery banner. `CD_HEALTH_URL` and
   `CD_HEALTH_POLL_SECONDS` exist for Terminal tests only.
 - Extension 0.6.1 and later and the iPhone Shortcut send `X-Client`.
 
-**Small debts.** The client opens plain `/view` (the Locked page asks for the
-token once); one `TZ` constant in `server.py`; `retry_loop` sweeps 10 minutes
+**Sign-in.** The token never goes in a URL (leak audit H3, 2026-10-30). The
+Locked page posts it to `POST /view` (routed before the capture inbox), which
+sets the session cookie and answers 303 to `/view`; `GET /view?token=` never
+signs in and shows the Locked page with a "please sign in" notice. The Mac
+client opens plain `/view`; the extension sets the same cookie itself (see
+Extension capture). `do_POST` refuses a negative or malformed
+`Content-Length` (400) and a missing one (411 with the token, the plain 401
+without it) before reading any body.
+
+**Small debts.** one `TZ` constant in `server.py`; `retry_loop` sweeps 10 minutes
 after start and then every 6 hours, logging one line per sweep.
 
 **Explicit bind, off by default.** `bind_addresses` in `config.json` makes the
@@ -153,10 +169,10 @@ brief tap / deck / page / api  --> set_item_state --> knowledge.json (state, sta
                                                  \-> triage_log.jsonl --> daily_brief.py --weekly (Monday) --> loopcheck-history.txt
 any authenticated request      --> clients.json  --> /health, Host health line, strike rule
 server thread (5 min)          --> heartbeat.json
-Mac client (15 min, no auth)   --> GET /health   --> menu row, banner after two misses
+Mac client (15 min, token)     --> GET /health   --> menu row, banner after two misses
 ```
 
-### Extension capture (0.6, shipped 2026-09-04; 0.6.1 on 2026-09-05 adds the X-Client header; 0.6.2 on 2026-10-30 fixes the three live-check follow-ups)
+### Extension capture (0.6, shipped 2026-09-04; 0.6.1 on 2026-09-05 adds the X-Client header; 0.6.2 on 2026-10-30 fixes the three live-check follow-ups; 0.6.3 on 2026-10-30 keeps the token out of URLs)
 
 The server shape is unchanged. Every extension capture now uses authenticated
 `POST /add_sync`, so the client receives `saved`, `already_saved`, `failed`, or
@@ -171,6 +187,12 @@ dependency. Files and responsibilities:
   the honest outcome (saved, already saved, queued, refused, failed), plus
   Save current page, Open Content Digest, Settings, a collapsed recent-activity
   list, and the retry queue count. The field is never prefilled from the tab.
+  Open Content Digest sets the server's `cd_session` cookie with
+  `chrome.cookies` (HMAC-SHA256 of `content-digest-cookie-v1` keyed by the
+  token, the value `server._session_cookie_value()` derives; both test suites
+  pin it for one token) and opens plain `/view`. If the cookie cannot be set,
+  the Locked page still signs in by hand. This is what the `cookies`
+  permission is for.
 - `shared.js` owns URL unwrapping for known redirector wrappers (LinkedIn
   safety/go, Google, Facebook, Reddit, href.li, away.vk.com), container
   detection, LinkedIn post detection, and identity selection.

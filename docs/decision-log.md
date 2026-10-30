@@ -1,5 +1,33 @@
 # docs/decision-log.md
 
+## 2026-10-30 | Security | Leak audit H3 and M4: the token stays out of URLs, /health goes quiet
+
+Context: The repo-visibility leak audit (round 2, 2026-10-27) found the
+token in URLs (the extension opened `/view?token=`, the Locked form sent the
+token by GET), an unauthenticated `/health` that showed each device's last
+contact, the last save and the start time, a negative `Content-Length` that
+made the server wait for the client to hang up, and a DNS rebinding gap
+between the URL-fetch guard and the connection.
+
+Decision: (1) The extension signs the browser in by setting the server's
+session cookie with `chrome.cookies` (new `cookies` permission) and opens
+plain `/view`; the Locked form posts the token; a `?token=` link never signs
+in. (2) `/health` without the token answers only `ok` and the version; the
+full snapshot needs the token; the Mac client sends its token. (3) A
+negative or malformed `Content-Length` is 400, a missing one is 411 with the
+token and the plain 401 without it. (4) Page fetches resolve once at connect
+time, check every address, and dial a checked one; proxies are off for them.
+
+Reason: Setting the cookie is the one sign-in path that needs no network
+step and no form post from an extension page to a plain-HTTP address, which
+Chrome may warn about; the cookie value is already derived in public code.
+The minimal `/health` keeps every existing liveness check working (the Mac
+client's watchdog, the extension's Test connection, the RUNBOOK's 200 check);
+the daily capture-path check uses `/assets/` and an empty `POST /add` that
+must stay 401, so the missing-length rule answers 401 without the token.
+
+---
+
 ## 2026-10-30 | Extension | A capture refused for its settings waits instead of retrying every 15 minutes
 
 Context: The 2026-10-22 live checks found that a capture refused for a bad

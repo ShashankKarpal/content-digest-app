@@ -357,3 +357,17 @@ brief; docs and version 0.6.
   fails when its run never finishes (before, a hung promise exited 0).
   Tests: 106 Python tests and 102 extension assertions, run from a
   `git archive` copy with a fake `secrets.json`.
+
+## 2026-10-30: extension 0.6.3, leak audit H3 and M4 (kk2 Claude Code)
+
+- H3: the extension's Open Content Digest sets the session cookie and opens
+  plain `/view`; the Locked form posts; `/view?token=` links get a "please
+  sign in" page and no cookie.
+- M4: `/health` without the token answers only `ok` and the version; the Mac
+  client sends its token. A negative, malformed or missing `Content-Length`
+  is refused before any body read (the daily capture-path check's empty
+  `POST /add` still gets 401, tested with its own curl command). Page fetches
+  connect only to an address checked at connect time (DNS rebinding).
+- Manifest 0.6.3. One commit per fix, each with a test that fails on the
+  parent commit. Tests run from a `git archive` copy with a fake
+  `secrets.json`.
