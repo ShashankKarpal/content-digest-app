@@ -1441,6 +1441,12 @@ LOCKED_WRONG_TOKEN_NOTICE = '<p style="color:#e0a060;">That token was not accept
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Seconds a socket read or write may wait. Without it a client that
+    # declares a body and never sends it holds a thread forever (review of
+    # the M4 fix, 2026-10). On a timeout the base class closes the
+    # connection without a traceback.
+    timeout = 30
+
     def _bearer_ok(self):
         auth = self.headers.get("Authorization", "")
         return bool(AUTH_TOKEN) and hmac.compare_digest(

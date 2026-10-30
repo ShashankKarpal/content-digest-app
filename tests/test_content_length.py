@@ -100,6 +100,29 @@ class ContentLengthTests(unittest.TestCase):
     def test_a_good_length_still_works(self):
         self.assertEqual(self.status("0", token=True), "200")
 
+    def test_the_server_sets_a_socket_timeout(self):
+        # Review of the M4 fix: a valid length with no body waited forever.
+        self.assertIsNotNone(server.Handler.timeout, "no socket timeout: a missing body holds a thread")
+        self.assertLessEqual(server.Handler.timeout, 60)
+
+    def test_a_body_that_never_comes_does_not_hold_the_thread(self):
+        # The same timeout, shortened here so the test is quick.
+        errors = []
+        self.httpd.handle_error = lambda request, address: errors.append(address)
+        with mock.patch.object(server.Handler, "timeout", 1):
+            s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            try:
+                s.sendall(f"POST /add HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                          "Content-Length: 100\r\n\r\n".encode())
+                try:
+                    closed = s.recv(200) == b""
+                except socket.timeout:
+                    closed = False
+            finally:
+                s.close()
+        self.assertTrue(closed, "the server still waits for a body that never comes")
+        self.assertEqual(errors, [], "the timeout surfaced as a traceback in the error log")
+
     @unittest.skipIf(shutil.which("curl") is None, "curl is not installed here")
     def test_the_daily_capture_path_probe_still_gets_401(self):
         # The exact command the 09:15 check runs, pointed at this test server.
