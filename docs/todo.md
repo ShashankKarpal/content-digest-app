@@ -23,7 +23,7 @@ roadmap.md and worklog.md; this file holds only what is open.
       same "server is unavailable or needs attention" text as a network failure.
 - [x] Extension queue: an item refused for a bad token retries every 15 minutes
       forever; stop retrying, or retry only after the settings change.
-- [ ] Extension errors page: "Cannot create item with duplicate id cd-save".
+- [x] Extension errors page: "Cannot create item with duplicate id cd-save".
       `createMenu` runs from both `onInstalled` and `onStartup` and the
       `removeAll` callback races; harmless, the menu works.
 

@@ -17,6 +17,11 @@ const sync = {};
 const calls = [];
 const listeners = {};
 let contextReply = {};
+// The context menu model: removeAll clears at once but calls back later, as
+// in Chrome, so two rebuilds in flight can race.
+const menus = new Set();
+const menuErrors = [];
+const menuCallbacks = [];
 let fetchReply = async () => ({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
 
 function area(data) {
@@ -53,8 +58,16 @@ const chrome = {
     setBadgeBackgroundColor: () => {},
   },
   contextMenus: {
-    removeAll: (callback) => { calls.push(["removeAll"]); callback(); },
-    create: (options) => calls.push(["menu", options]),
+    removeAll: (callback) => { calls.push(["removeAll"]); menus.clear(); menuCallbacks.push(callback); },
+    create: (options, callback) => {
+      calls.push(["menu", options]);
+      if (menus.has(options.id)) {
+        chrome.runtime.lastError = { message: "Cannot create item with duplicate id " + options.id };
+        menuErrors.push(chrome.runtime.lastError.message);
+      } else menus.add(options.id);
+      if (callback) callback();
+      delete chrome.runtime.lastError;
+    },
     onClicked: { addListener: (fn) => { listeners.context = fn; } },
   },
   runtime: {
@@ -99,6 +112,13 @@ function requestHeaders(index = -1) {
 
 // Runs the real popup.js against a minimal page and returns the status line it
 // shows after the background answers a send with the given response.
+async function settleMenus() {
+  for (let i = 0; i < 10; i++) {
+    while (menuCallbacks.length) menuCallbacks.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 async function popupText(response) {
   const elements = {};
   const element = (id) => elements[id] || (elements[id] = {
@@ -300,7 +320,17 @@ async function run() {
   for (let i = 0; i < 6; i++) await sandbox.addHistory("saved", "Saved.", "https://example.com/" + i);
   assert.equal(local.captureHistory.length, 5, "history stays at five results");
   sandbox.createMenu();
+  await settleMenus();
   assert.equal(calls.some((call) => call[0] === "removeAll"), true, "T15 clears old menus before creation");
+
+  reset();
+  menus.clear();
+  menuErrors.length = 0;
+  listeners.installed({ reason: "chrome_update" });
+  listeners.startup();
+  await settleMenus();
+  assert.deepEqual(menuErrors, [], "T15 onInstalled and onStartup together never create cd-save twice");
+  assert.deepEqual(Array.from(menus), ["cd-save"], "T15 exactly one Save to Content Digest item remains");
   console.log("extension acceptance: " + assertionCount + " assertions passed");
 }
 

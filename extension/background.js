@@ -211,12 +211,23 @@ async function migrateFromSync() {
   }
 }
 
+// onInstalled and onStartup can both fire in one worker start. Each rebuild
+// waits for the previous one, so two removeAll callbacks never race to
+// create the same id.
+let menuReady = Promise.resolve();
+
 function createMenu() {
-  chrome.contextMenus.removeAll(() => chrome.contextMenus.create({
-    id: "cd-save",
-    title: "Save to Content Digest",
-    contexts: ["page", "selection", "link"],
+  menuReady = menuReady.then(() => new Promise((resolve) => {
+    chrome.contextMenus.removeAll(() => chrome.contextMenus.create({
+      id: "cd-save",
+      title: "Save to Content Digest",
+      contexts: ["page", "selection", "link"],
+    }, () => {
+      if (chrome.runtime.lastError) console.warn("Content Digest menu: " + chrome.runtime.lastError.message);
+      resolve();
+    }));
   }));
+  return menuReady;
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
