@@ -168,7 +168,7 @@ async function popupText(response) {
 
 // Runs the real popup.js, clicks Open Content Digest, and returns the tabs it
 // opened and the cookies it set.
-async function popupOpenDigest(settings, cookieFails = false) {
+async function popupOpenDigest(settings, cookieFails = false, checkStatus = 200) {
   const elements = {};
   const element = (id) => elements[id] || (elements[id] = {
     id, textContent: "", value: "", disabled: false, listeners: {},
@@ -179,6 +179,7 @@ async function popupOpenDigest(settings, cookieFails = false) {
   const background = [];
   const cookies = [];
   const warnings = [];
+  const checks = [];
   const popupChrome = {
     runtime: { sendMessage: async () => ({}), openOptionsPage() {} },
     storage: { local: area({ ...settings }), onChanged: { addListener() {} } },
@@ -194,6 +195,8 @@ async function popupOpenDigest(settings, cookieFails = false) {
   const page = {
     chrome: popupChrome,
     console: { warn: (message) => warnings.push(message) },
+    fetch: async (url, options) => { checks.push([url, options.headers.Authorization]); return { ok: checkStatus === 200, status: checkStatus }; },
+    AbortSignal,
     crypto: globalThis.crypto,
     TextEncoder,
     document: { getElementById: element, querySelectorAll: () => [], createElement: () => ({}) },
@@ -202,7 +205,7 @@ async function popupOpenDigest(settings, cookieFails = false) {
   vm.runInContext(fs.readFileSync(path.join(root, "extension/popup.js"), "utf8"), page);
   elements["open-digest"].listeners.click();
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
-  return { opened, background, cookies, warnings, status: elements.result.textContent };
+  return { opened, background, cookies, warnings, checks, status: elements.result.textContent };
 }
 
 async function run() {
@@ -245,6 +248,12 @@ async function run() {
   assert.equal(refused.warnings.length, 1, "H3 a refused cookie leaves one console line");
   assert.deepEqual(refused.background, [true], "H3 the tab opens in the background, so the popup stays open to show why");
   assert.deepEqual(digest.background, [false], "H3 a signed-in open brings the tab to the front");
+  assert.deepEqual(digest.checks, [["http://server.test:7778/failures", "Bearer test-token"]],
+    "H3 the popup checks the stored token with the server before signing in");
+  const stale = await popupOpenDigest({ server: "http://server.test:7778", token: "old-token" }, false, 401);
+  assert.equal(stale.cookies.length, 0, "H3 a rejected token never replaces the browser's cookie");
+  assert.deepEqual(stale.background, [true], "H3 a rejected token opens the Locked page in the background");
+  assert.match(stale.status, /rejected/i, "H3 a rejected token is named in the popup");
   const unsetDigest = await popupOpenDigest({ server: "", token: "" });
   assert.deepEqual(unsetDigest.opened, [], "H3 no tab without settings");
   assert.equal(unsetDigest.cookies.length, 0, "H3 no cookie without settings");

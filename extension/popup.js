@@ -67,6 +67,21 @@ document.getElementById("open-digest").addEventListener("click", async () => {
   const { server = "", token = "" } = await chrome.storage.local.get(["server", "token"]);
   if (!server.trim() || !token.trim()) { show("Open Settings and enter the server URL and token first."); return; }
   const base = server.trim().replace(/\/$/, "");
+  // Check the stored token first: a cookie made from a token the server
+  // rejects would replace a good sign-in made on the Locked page. A network
+  // failure is not a rejection; the tab then shows what the server says.
+  let rejected = false;
+  try {
+    const check = await fetch(base + "/failures", {
+      headers: { Authorization: "Bearer " + token.trim(), "X-Client": "extension" }, signal: AbortSignal.timeout(10000),
+    });
+    rejected = check.status === 401 || check.status === 403;
+  } catch (error) {}
+  if (rejected) {
+    show("The token in Settings was rejected, so this browser was not signed in. Content Digest is open in a new tab and will ask for the token.");
+    chrome.tabs.create({ url: base + "/view", active: false });
+    return;
+  }
   try {
     await chrome.cookies.set({
       url: base + "/view", name: "cd_session", value: await sessionCookieValue(token.trim()), path: "/",
