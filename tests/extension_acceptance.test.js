@@ -325,6 +325,18 @@ async function run() {
   assert.equal(calls.filter((call) => call[0] === "fetch").length, 1, "T10 a still-wrong token is tried once, not once per queued item");
   assert.equal(local.pending.length, 3, "T10 every refused item stays queued");
 
+  // A token rotated on the server: the timed retry meets one refusal, and the
+  // items it skipped wait for settings too instead of one refusal per tick.
+  reset();
+  local.pending = [1, 2].map((n) => ({ url: exact + "&t=" + n, queuedAt: n, queueReason: "Failed to fetch" }));
+  alarms.add("cd-flush");
+  fetchReply = async () => ({ ok: false, status: 401, json: async () => ({}) });
+  await sandbox.flushPending();
+  assert.equal(calls.filter((call) => call[0] === "fetch").length, 1, "T10 the timed retry stops at the first token refusal");
+  assert.deepEqual(Array.from(local.pending, (item) => item.queueReason.slice(0, 5)), ["AUTH:", "AUTH:"],
+    "T10 the skipped items wait for settings too");
+  assert.equal(alarms.has("cd-flush"), false, "T10 no timed retry is left to repeat the refusal");
+
   // Clearing the token turns a refused item into a CONFIG one; it still waits
   // for Settings instead of re-arming the timed retry.
   reset();
@@ -355,6 +367,23 @@ async function run() {
   await releaseUntil(Promise.all([sandbox.flushPending(), sandbox.flushPending({ retryRefused: true })]));
   assert.equal(calls.filter((call) => call[0] === "fetch").length, 1, "T11 overlapping flushes post an item once");
   assert.equal(local.pending.length, 0);
+
+  // Server down: one flush tries one item, not every item at 30 s each.
+  reset();
+  local.pending = [1, 2, 3].map((n) => ({ url: exact + "&d=" + n, queuedAt: n, queueReason: "Failed to fetch" }));
+  fetchReply = async () => { throw new Error("offline"); };
+  await sandbox.flushPending();
+  assert.equal(calls.filter((call) => call[0] === "fetch").length, 1, "T11 a flush stops at the first network failure");
+  assert.equal(local.pending.length, 3, "T11 every item stays queued for the next retry");
+
+  // An HTTP status error is about one item; the flush goes on.
+  reset();
+  local.pending = [1, 2].map((n) => ({ url: exact + "&h=" + n, queuedAt: n, queueReason: "Failed to fetch" }));
+  const statuses = [500, 200];
+  fetchReply = async () => { const status = statuses.shift(); return { ok: status === 200, status, json: async () => ({ status: "saved" }) }; };
+  await sandbox.flushPending();
+  assert.equal(calls.filter((call) => call[0] === "fetch").length, 2, "T11 an HTTP error on one item does not stop the flush");
+  assert.deepEqual(Array.from(local.pending, (item) => item.url), [exact + "&h=1"]);
 
   reset();
   fetchReply = async () => { throw new Error("offline"); };

@@ -148,15 +148,20 @@ async function runFlush(retryRefused) {
   const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
   const delivered = new Set();
   const reasons = new Map();
-  let settingsWrong = false;
+  let stopReason = "";
   for (const item of pending) {
     if (waitsForSettings(item.queueReason) && !retryRefused) continue;
-    // Once the settings are refused, every later post would be refused too.
-    if (settingsWrong) continue;
+    if (stopReason) {
+      // Refused settings refuse every item the same way, so the rest wait too.
+      if (waitsForSettings(stopReason)) reasons.set(queueKey(item), stopReason);
+      continue;
+    }
     const result = await submit(cleanPayload(item), 0, true);
     if (result.outcome === "queued") {
       reasons.set(queueKey(item), result.message);
-      settingsWrong = waitsForSettings(result.message);
+      // No answer or refused settings: the next item would fail the same way.
+      // An HTTP status error is about this item, so the flush goes on.
+      if (!result.message.startsWith("HTTP ")) stopReason = result.message;
     } else delivered.add(queueKey(item));
   }
   let remaining = [];
