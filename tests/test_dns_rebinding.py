@@ -82,6 +82,16 @@ class RebindingTests(unittest.TestCase):
         self.assertEqual(self.accepted, [], "the short-link hop connected to the address the name rebound to")
 
 
+class MappedAddressTests(unittest.TestCase):
+    def test_a_tailnet_address_in_ipv6_form_is_internal(self):
+        # Security review, 2026-10-30: ::ffff:100.x passed every IPv6 check.
+        self.assertTrue(extractors._address_is_internal("::ffff:100.100.1.1"))
+        self.assertIsNotNone(extractors.blocked_url_reason("http://[::ffff:100.100.1.1]/", resolve=False))
+
+    def test_a_public_address_in_ipv6_form_is_not(self):
+        self.assertFalse(extractors._address_is_internal("::ffff:93.184.216.34"))
+
+
 class DialTests(unittest.TestCase):
     def test_the_connection_dials_the_address_it_checked(self):
         lookups, dialled = [], []

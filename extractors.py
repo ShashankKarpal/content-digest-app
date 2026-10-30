@@ -63,6 +63,11 @@ def _address_is_internal(addr):
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        # ::ffff:100.100.1.1 is the tailnet address 100.100.1.1; the IPv6
+        # checks below do not know the 100.64/10 range (security review,
+        # 2026-10-30).
+        ip = ip.ipv4_mapped
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
             or ip.is_multicast or ip.is_unspecified
             or ip in ipaddress.ip_network("100.64.0.0/10"))   # CGNAT incl. Tailscale
