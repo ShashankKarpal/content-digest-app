@@ -87,6 +87,19 @@ class ViewSignInTests(unittest.TestCase):
         self.assertIn("out of date", page)
         self.assertIn("extension", page)
 
+    def test_no_token_on_the_server_is_not_blamed_on_the_browser(self):
+        # Review round 3: with a placeholder token every cookie fails, and the
+        # browser's sign-in is not the fault.
+        server.AUTH_TOKEN = ""
+        resp, page = self.request("GET", "/view", headers={"Cookie": f"{server.COOKIE_NAME}=anything"})
+        self.assertEqual(resp.status, 401)
+        self.assertNotIn("out of date", page)
+
+    def test_a_good_cookie_beside_an_old_one_still_signs_in(self):
+        good = f"{server.COOKIE_NAME}={server._session_cookie_value()}"
+        resp, _ = self.request("GET", "/view", headers={"Cookie": f"{server.COOKIE_NAME}=old; {good}"})
+        self.assertEqual(resp.status, 200)
+
     def test_the_locked_form_posts_the_token(self):
         resp, page = self.request("GET", "/view")
         self.assertEqual(resp.status, 401)

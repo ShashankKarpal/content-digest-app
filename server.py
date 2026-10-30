@@ -1457,15 +1457,20 @@ class Handler(BaseHTTPRequestHandler):
         return bool(AUTH_TOKEN) and hmac.compare_digest(
             auth.encode(), f"Bearer {AUTH_TOKEN}".encode())
 
+    def _session_cookies(self):
+        """Every value the request carries for the session cookie."""
+        values = []
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, val = part.strip().partition("=")
+            if name == COOKIE_NAME:
+                values.append(val)
+        return values
+
     def _cookie_ok(self):
         if not AUTH_TOKEN:
             return False
         expected = _session_cookie_value().encode()
-        for part in self.headers.get("Cookie", "").split(";"):
-            name, _, val = part.strip().partition("=")
-            if name == COOKIE_NAME and val and hmac.compare_digest(val.encode(), expected):
-                return True
-        return False
+        return any(val and hmac.compare_digest(val.encode(), expected) for val in self._session_cookies())
 
     def _authed(self):
         return self._bearer_ok() or self._cookie_ok()
@@ -1544,8 +1549,8 @@ class Handler(BaseHTTPRequestHandler):
             import urllib.parse as _up
             old_link = "token" in _up.parse_qs(query, keep_blank_values=True)
             if not self._cookie_ok():
-                stale = any(part.strip().partition("=")[0] == COOKIE_NAME
-                            for part in self.headers.get("Cookie", "").split(";"))
+                # Out of date only if the server has a token to check against.
+                stale = bool(AUTH_TOKEN and self._session_cookies())
                 self._locked(LOCKED_OLD_LINK_NOTICE if old_link
                              else LOCKED_STALE_COOKIE_NOTICE if stale else "")
                 return
