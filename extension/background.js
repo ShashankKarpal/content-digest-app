@@ -32,17 +32,29 @@ async function addHistory(outcome, message, url) {
   await chrome.storage.local.set({ [HISTORY_KEY]: history.slice(0, 5) });
 }
 
-// An item the server refused for its token waits for a settings change; the
-// 15-minute alarm retries only items that failed for other reasons.
-function tokenRefused(item) {
-  return String(item.queueReason || "").startsWith("AUTH:");
+// A refused token (AUTH:) or missing settings (CONFIG:) can only be fixed in
+// Settings, so such an item waits for a settings change; the 15-minute alarm
+// retries only items that failed for other reasons.
+function waitsForSettings(reason) {
+  return /^(AUTH|CONFIG):/.test(String(reason || ""));
+}
+
+// Every read-modify-write of the queue runs one at a time, so a capture queued
+// while a flush is waiting on the network is never overwritten.
+let queueWrites = Promise.resolve();
+
+function updateQueue(change) {
+  const run = queueWrites.then(async () => {
+    const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
+    await chrome.storage.local.set({ [PENDING_KEY]: change(pending) });
+  });
+  queueWrites = run.catch(() => {});
+  return run;
 }
 
 async function queuePending(payload, reason) {
-  const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
-  pending.push({ ...payload, queuedAt: Date.now(), queueReason: reason });
-  await chrome.storage.local.set({ [PENDING_KEY]: pending.slice(-100) });
-  if (!reason.startsWith("AUTH:")) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+  await updateQueue((pending) => [...pending, { ...payload, queuedAt: Date.now(), queueReason: reason }].slice(-100));
+  if (!waitsForSettings(reason)) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
 }
 
 function setBadge(tabId, text, color) {
@@ -97,30 +109,50 @@ async function submit(payload, tabId, fromQueue = false) {
     const message = String(error.message || error);
     if (!fromQueue) {
       await queuePending(payload, message);
-      await addHistory("queued", message.startsWith("AUTH:") || message.startsWith("CONFIG:")
+      await addHistory("queued", waitsForSettings(message)
         ? message + " Capture queued."
         : "Server unreachable. Capture queued for retry.", url);
     }
-    setBadge(tabId, message.startsWith("AUTH:") || message.startsWith("CONFIG:") ? "CFG" : "Q", "#ff9f1c");
+    setBadge(tabId, waitsForSettings(message) ? "CFG" : "Q", "#ff9f1c");
     return { outcome: "queued", message, url };
   }
 }
 
-async function flushPending({ retryRefused = false } = {}) {
+function queueKey(item) {
+  return item.queuedAt + "|" + item.url;
+}
+
+async function runFlush(retryRefused) {
   const { [PENDING_KEY]: pending = [] } = await chrome.storage.local.get(PENDING_KEY);
-  const remaining = [];
+  const delivered = new Set();
+  const reasons = new Map();
   for (const item of pending) {
-    if (tokenRefused(item) && !retryRefused) {
-      remaining.push(item);
-      continue;
-    }
-    const payload = cleanPayload(item);
-    const result = await submit(payload, 0, true);
-    if (result.outcome === "queued") remaining.push({ ...item, queueReason: result.message });
+    if (waitsForSettings(item.queueReason) && !retryRefused) continue;
+    const result = await submit(cleanPayload(item), 0, true);
+    if (result.outcome === "queued") reasons.set(queueKey(item), result.message);
+    else delivered.add(queueKey(item));
   }
-  if (pending.length) await chrome.storage.local.set({ [PENDING_KEY]: remaining });
-  if (remaining.some((item) => !tokenRefused(item))) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
-  else chrome.alarms.clear(FLUSH_ALARM);
+  let remaining = [];
+  await updateQueue((current) => {
+    remaining = current
+      .filter((item) => !delivered.has(queueKey(item)))
+      .map((item) => reasons.has(queueKey(item)) ? { ...item, queueReason: reasons.get(queueKey(item)) } : item);
+    return remaining;
+  });
+  // Only a settings retry can turn a waiting item back into a timed one; an
+  // alarm or queued capture already armed the alarm, and re-creating it would
+  // restart the 15-minute period.
+  if (!remaining.some((item) => !waitsForSettings(item.queueReason))) chrome.alarms.clear(FLUSH_ALARM);
+  else if (retryRefused) chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 15 });
+}
+
+// Flushes run one at a time, so two triggers never post the same item twice.
+let flushes = Promise.resolve();
+
+function flushPending({ retryRefused = false } = {}) {
+  const run = flushes.then(() => runFlush(retryRefused));
+  flushes = run.catch(() => {});
+  return run;
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {

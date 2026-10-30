@@ -112,6 +112,21 @@ function requestHeaders(index = -1) {
 
 // Runs the real popup.js against a minimal page and returns the status line it
 // shows after the background answers a send with the given response.
+// Fetches held open until the test releases them, to overlap flushes.
+const held = [];
+async function settle() {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+async function releaseUntil(done) {
+  let finished = false;
+  done.then(() => { finished = true; }, () => { finished = true; });
+  for (let i = 0; i < 20 && !finished; i++) {
+    await settle();
+    while (held.length) held.shift()({ ok: true, status: 200, json: async () => ({ status: "saved" }) });
+  }
+  return done;
+}
+
 async function settleMenus() {
   for (let i = 0; i < 10; i++) {
     while (menuCallbacks.length) menuCallbacks.shift()();
@@ -279,6 +294,37 @@ async function run() {
   await listeners.storage({ configuredAt: { newValue: 3 } }, "local");
   assert.equal(local.pending.length, 0, "T10 restored auth flushes the queue after the settings change");
 
+  // Clearing the token turns a refused item into a CONFIG one; it still waits
+  // for Settings instead of re-arming the timed retry.
+  reset();
+  local.pending = [{ url: exact, queuedAt: 1, queueReason: "AUTH: The server rejected the token." }];
+  local.token = "";
+  await listeners.storage({ token: { newValue: "" } }, "local");
+  assert.match(local.pending[0].queueReason, /^CONFIG:/, "T10 a cleared token leaves the item waiting for settings");
+  assert.equal(calls.some((call) => call[0] === "alarm"), false, "T10 missing settings never arm the 15-minute retry");
+
+  // A capture queued while a flush waits on the network survives the flush.
+  reset();
+  held.length = 0;
+  fetchReply = () => new Promise((resolve) => held.push(resolve));
+  local.pending = [{ url: "https://example.com/old", queuedAt: 1, queueReason: "offline" }];
+  const flushing = sandbox.flushPending();
+  await settle();
+  assert.equal(held.length, 1, "T11 the flush is waiting on the network");
+  await sandbox.queuePending({ url: "https://example.com/new" }, "offline");
+  await releaseUntil(flushing);
+  assert.deepEqual(Array.from(local.pending, (item) => item.url), ["https://example.com/new"],
+    "T11 a capture queued during a flush is kept, the delivered one is removed");
+
+  // Two triggers at once (alarm and a settings save) post each item once.
+  reset();
+  held.length = 0;
+  fetchReply = () => new Promise((resolve) => held.push(resolve));
+  local.pending = [{ url: "https://example.com/once", queuedAt: 1, queueReason: "offline" }];
+  await releaseUntil(Promise.all([sandbox.flushPending(), sandbox.flushPending({ retryRefused: true })]));
+  assert.equal(calls.filter((call) => call[0] === "fetch").length, 1, "T11 overlapping flushes post an item once");
+  assert.equal(local.pending.length, 0);
+
   reset();
   fetchReply = async () => { throw new Error("offline"); };
   await sandbox.submit({ url: exact }, 1);
@@ -334,4 +380,13 @@ async function run() {
   console.log("extension acceptance: " + assertionCount + " assertions passed");
 }
 
-run().catch((error) => { console.error(error); process.exitCode = 1; });
+// A promise that never settles ends node with exit 0 and no summary line;
+// count that as a failure, not a pass.
+let finished = false;
+process.on("exit", () => {
+  if (!finished && !process.exitCode) {
+    console.error("extension acceptance: did not finish (a promise never settled)");
+    process.exitCode = 1;
+  }
+});
+run().then(() => { finished = true; }, (error) => { console.error(error); process.exitCode = 1; });
