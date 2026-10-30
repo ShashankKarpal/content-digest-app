@@ -168,7 +168,7 @@ async function popupText(response) {
 
 // Runs the real popup.js, clicks Open Content Digest, and returns the tabs it
 // opened and the cookies it set.
-async function popupOpenDigest(settings) {
+async function popupOpenDigest(settings, cookieFails = false) {
   const elements = {};
   const element = (id) => elements[id] || (elements[id] = {
     id, textContent: "", value: "", disabled: false, listeners: {},
@@ -177,14 +177,22 @@ async function popupOpenDigest(settings) {
   });
   const opened = [];
   const cookies = [];
+  const warnings = [];
   const popupChrome = {
     runtime: { sendMessage: async () => ({}), openOptionsPage() {} },
     storage: { local: area({ ...settings }), onChanged: { addListener() {} } },
     tabs: { query: (query, callback) => callback([{ id: 1, url: "https://example.com/" }]), create: (options) => opened.push(options.url) },
-    cookies: { set: async (details) => { cookies.push(details); return details; } },
+    cookies: {
+      set: async (details) => {
+        if (cookieFails) throw new Error("No host permissions for cookies at url");
+        cookies.push(details);
+        return details;
+      },
+    },
   };
   const page = {
     chrome: popupChrome,
+    console: { warn: (message) => warnings.push(message) },
     crypto: globalThis.crypto,
     TextEncoder,
     document: { getElementById: element, querySelectorAll: () => [], createElement: () => ({}) },
@@ -193,7 +201,7 @@ async function popupOpenDigest(settings) {
   vm.runInContext(fs.readFileSync(path.join(root, "extension/popup.js"), "utf8"), page);
   elements["open-digest"].listeners.click();
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
-  return { opened, cookies, status: elements.result.textContent };
+  return { opened, cookies, warnings, status: elements.result.textContent };
 }
 
 async function run() {
@@ -230,6 +238,10 @@ async function run() {
   assert.equal(digest.cookies[0].name, "cd_session", "H3 the cookie has the server's cookie name");
   assert.equal(digest.cookies[0].httpOnly, true, "H3 the cookie is HttpOnly, as the server sets it");
   assert.equal(new URL(digest.cookies[0].url).host, "server.test:7778", "H3 the cookie is set for the server");
+  const refused = await popupOpenDigest({ server: "http://server.test:7778", token: "test-token" }, true);
+  assert.deepEqual(refused.opened, ["http://server.test:7778/view"], "H3 a refused cookie still opens plain /view");
+  assert.match(refused.status, /could not sign in/i, "H3 a refused cookie is said, not swallowed");
+  assert.equal(refused.warnings.length, 1, "H3 a refused cookie leaves one console line");
   const unsetDigest = await popupOpenDigest({ server: "", token: "" });
   assert.deepEqual(unsetDigest.opened, [], "H3 no tab without settings");
   assert.equal(unsetDigest.cookies.length, 0, "H3 no cookie without settings");

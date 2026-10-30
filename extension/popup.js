@@ -74,6 +74,8 @@ document.getElementById("open-digest").addEventListener("click", async () => {
     });
   } catch (error) {
     // Still open the page: its Locked form signs in by hand.
+    console.warn("Content Digest: could not set the sign-in cookie: " + (error && error.message));
+    show("Could not sign in automatically. The page will ask for the token.");
   }
   chrome.tabs.create({ url: base + "/view" });
 });
