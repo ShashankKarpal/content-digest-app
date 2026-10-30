@@ -146,7 +146,7 @@ warning if none binds). Absent key: current behaviour.
 `heartbeat.json`, `clients.json`, `loopcheck-history.txt`, `brief_last.html`.
 
 **Tests:** `tests/test_daily_brief_rollup.py` (18), `tests/test_server_bind.py`
-(9), `tests/extension_acceptance.test.js` (77 assertions).
+(9), `tests/extension_acceptance.test.js` (86 assertions).
 
 ```
 brief tap / deck / page / api  --> set_item_state --> knowledge.json (state, state_changed_at, state_source)
@@ -188,10 +188,12 @@ dependency. Files and responsibilities:
 - `background.js` owns submission through authenticated `POST /add_sync`,
   badges, the capped 100-item retry queue with its 15-minute alarm, and a
   persistent five-result history. An item the server refused for its token
-  (401 or 403) is not retried by the alarm; saving the options page (a change
-  to `server`, `token` or `configuredAt`) retries every queued item once. The
-  context menu is rebuilt one call at a time, because `onInstalled` and
-  `onStartup` can both fire in one worker start. Before POSTing it resolves a post-shaped
+  (401 or 403), or one queued with no server URL or token set, is not retried
+  by the alarm; saving the options page (a change to `server`, `token` or
+  `configuredAt`) retries every queued item once. Flushes run one at a time
+  and the queue is written through one chain, so a capture queued during a
+  flush is kept. The context menu is rebuilt one call at a time, because
+  `onInstalled` and `onStartup` can both fire in one worker start. Before POSTing it resolves a post-shaped
   `lnkd.in/p/<code>` short link by following the redirect and submits the final
   direct `linkedin.com` post URL.
 
