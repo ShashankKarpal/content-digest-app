@@ -1,5 +1,31 @@
 # docs/decision-log.md
 
+## 2026-10-31 | Client Runtime | The menu bar client moves to Content Digest Menu.app
+
+Context: The menu bar client's bundle and the Safari "Add to Dock" web app
+both lived at ~/Applications/Content Digest.app. On 2026-10-31 at 07:58 the
+web app was added to the Dock again, which replaced the client's bundle with
+the web app (bundle id com.apple.Safari.WebApp...; no Contents/MacOS). The
+running client kept going from memory; its next restart exited 78 because
+the LaunchAgent's program file no longer existed, and the menu item and the
+server watchdog were down until the bundle was rebuilt.
+
+Decision: The client bundle is ~/Applications/Content Digest Menu.app
+(name checked against the process list, launchctl, /Applications,
+~/Applications and Spotlight). Same bundle id com.shashank.contentdigest, so
+the notification permission carries over; built with the shared
+make_bundle.sh from the switchdeck repo and an icns made from
+design/web/icon-512.png. The LaunchAgent com.shashank.contentdigest.client
+points at the new executable. ~/Applications/Content Digest.app belongs to
+the Safari web app and is left alone; deleting and re-adding it to refresh
+its Dock icon no longer touches the client.
+
+Reason: Two apps at one path means refreshing either one breaks the other,
+silently, at the next restart. Before restarting a LaunchAgent, check that
+its program file exists.
+
+---
+
 ## 2026-10-30 | Security | Leak audit H3 and M4: the token stays out of URLs, /health goes quiet
 
 Context: The repo-visibility leak audit (round 2, 2026-10-27) found the
