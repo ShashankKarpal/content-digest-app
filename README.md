@@ -212,7 +212,7 @@ Saved items, summaries, embeddings, and the knowledge base live in plain files o
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT for the source code; see [LICENSE](LICENSE). The name, logos, icons and other brand assets are not covered; see [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Author
 
